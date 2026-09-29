@@ -83,7 +83,7 @@
   const typeName={single:'单张',pair:'对子',triple:'三张',triple1:'三带一',triple2:'三带二',straight:'顺子',pairs:'连对',plane:'飞机',plane1:'飞机带单',plane2:'飞机带对',four2:'四带二',four2pairs:'四带两对',bomb:'炸弹',rocket:'王炸'};
 
   function cardHTML(c, small=false){
-    if(c.rank.includes('王')) return `<div class="${small?'mini-card':'card'} joker ${c.rank==='大王'?'big-joker':'small-joker'}" data-id="${c.id}"><span class="card-rank">${c.rank}</span>${small?'':'<span class="card-big">★</span>'}</div>`;
+    if(c.rank.includes('王')) return small?`<div class="mini-card mini-joker ${c.rank==='大王'?'big-joker':'small-joker'}" data-id="${c.id}"><span>${c.rank==='大王'?'大':'小'}</span><b>★</b></div>`:`<div class="card joker ${c.rank==='大王'?'big-joker':'small-joker'}" data-id="${c.id}"><span class="card-rank">${c.rank}</span><span class="card-big">★</span></div>`;
     const red=suitRed(c.suit)?'red':'';
     if(small)return `<div class="mini-card ${red}">${c.rank}${c.suit}</div>`;
     return `<button class="card ${red}" data-id="${c.id}" aria-label="${c.rank}${c.suit}"><span class="card-rank">${c.rank}</span><span class="card-suit">${c.suit}</span><span class="card-big">${c.suit}</span></button>`;
@@ -100,8 +100,9 @@
     $('#role-label').textContent=state.landlord===0?'地主':'农民';$('#multiplier').textContent=state.multiplier;renderCounter();fitHand();
   }
   function fitHand(){
-    if(innerWidth>760||state.players[0].length<2){handEl.style.removeProperty('--hand-overlap');return}
-    const first=handEl.querySelector('.card');if(!first)return;const width=first.getBoundingClientRect().width,available=Math.max(200,handEl.clientWidth-32),step=(available-width)/(state.players[0].length-1);handEl.style.setProperty('--hand-overlap',`${Math.min(-8,step-width)}px`);
+    if(state.players[0].length<2){handEl.style.removeProperty('--hand-overlap');return}
+    const isLandscape=innerWidth>innerHeight&&innerHeight<=600;if(innerWidth>760&&!isLandscape){handEl.style.removeProperty('--hand-overlap');return}
+    const first=handEl.querySelector('.card');if(!first)return;const width=first.getBoundingClientRect().width,available=Math.max(220,handEl.clientWidth-(isLandscape?16:32)),fitStep=(available-width)/(state.players[0].length-1),step=isLandscape?Math.min(33,fitStep):fitStep;handEl.style.setProperty('--hand-overlap',`${Math.min(-8,step-width)}px`);
   }
   function setMessage(status,action=''){ $('#round-status').textContent=status;$('#last-action').textContent=action }
   function setHint(t){$('#hint').textContent=t}
