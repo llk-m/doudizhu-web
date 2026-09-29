@@ -202,6 +202,15 @@
     if(target&&move.combo.type===target.type)penalty+=Math.max(0,move.combo.main-target.main-1)*2.4;
     return penalty;
   }
+  function handPlanKey(cards,depth){return `${depth}|${groups(cards).map(([v,n])=>`${v}x${n}`).join(',')}`}
+  function estimatedTurns(cards){if(!cards.length)return 0;if(classify(cards))return 1;return Math.max(2,Math.ceil(handCost(cards)*.82))}
+  function planTurns(cards,depth,memo){
+    if(!cards.length)return 0;if(classify(cards))return 1;if(depth<=0)return estimatedTurns(cards);const key=handPlanKey(cards,depth);if(memo.has(key))return memo.get(key);
+    let branches=generateMoves(cards).map(move=>{const combo=classify(move),remaining=cards.filter(c=>!move.some(x=>x.id===c.id));let rough=handCost(remaining)*5-move.length*.7;if(['bomb','rocket','four2','four2pairs'].includes(combo.type)&&remaining.length>4)rough+=9;return {remaining,rough}});
+    branches.sort((a,b)=>a.rough-b.rough);branches=branches.slice(0,cards.length<=9?44:30);let best=Infinity;
+    for(const branch of branches){best=Math.min(best,1+planTurns(branch.remaining,depth-1,memo));if(best<=2)break}
+    if(!Number.isFinite(best))best=estimatedTurns(cards);memo.set(key,best);return best;
+  }
   function moveScore(p,move,target){
     const remaining=state.players[p].filter(c=>!move.cards.some(x=>x.id===c.id));if(!remaining.length)return -10000;
     const enemies=enemiesOf(p),danger=Math.min(...enemies.map(i=>state.players[i].length));let score=handCost(remaining)*8+followUpQuality(remaining)+move.combo.main*.08+attachmentPenalty(p,move)+controlCardPenalty(move,target,danger,remaining);
@@ -226,7 +235,9 @@
     if(!target){const sensible=moves.filter(m=>!['four2','four2pairs','bomb','rocket'].includes(m.combo.type));if(sensible.length)moves=sensible}
     const teammateLead=target&&state.landlord!==p&&state.lastPlay&&state.landlord!==state.lastPlay.player;
     if(teammateLead){const winning=moves.find(m=>m.cards.length===hand.length),landlordDanger=state.players[state.landlord].length<=2;if(winning)return winning.cards;if(!landlordDanger)return [];moves=moves.filter(m=>!['bomb','rocket'].includes(m.combo.type));if(!moves.length)return [];}
-    moves.sort((a,b)=>moveScore(p,a,target)-moveScore(p,b,target));return moves[0].cards;
+    moves.forEach(m=>m.score=moveScore(p,m,target));moves.sort((a,b)=>a.score-b.score);const shortlist=moves.slice(0,hand.length<=10?32:22),memo=new Map();
+    for(const move of shortlist){const remaining=hand.filter(c=>!move.cards.some(x=>x.id===c.id)),depth=remaining.length<=8?6:remaining.length<=12?3:2;move.plan=planTurns(remaining,depth,memo);move.total=move.score+move.plan*24}
+    shortlist.sort((a,b)=>a.total-b.total||a.score-b.score);return shortlist[0].cards;
   }
   function computerTurn(p){const cards=findMove(state.players[p],state.lastPlay?.combo,p);if(cards.length){const combo=classify(cards);commitPlay(p,cards,combo)}else commitPass(p)}
   function commitPlay(p,cards,combo){state.players[p]=state.players[p].filter(c=>!cards.some(x=>x.id===c.id));markSeen(cards);state.lastPlay={player:p,combo,cards};state.passes=0;if(combo.type==='bomb'||combo.type==='rocket')state.multiplier*=2;showPlayed(p,cards);setMessage(`${seatName(p)}出了${typeName[combo.type]}`,combo.type==='bomb'||combo.type==='rocket'?'倍数翻倍！':'传给下一家');render();if(!state.players[p].length)return finish(p);state.turn=nextSeat(p);setTimeout(beginTurn,550)}
