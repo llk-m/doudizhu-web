@@ -21,17 +21,21 @@
 
     <section class="table" id="table">
       <div class="table-glow"></div>
+      <aside class="card-counter" id="card-counter" aria-label="记牌器">
+        <div class="counter-title"><span class="counter-icon">◈</span><div><b>记牌器</b><small>对手未出</small></div></div>
+        <div class="counter-grid" id="counter-grid"></div>
+      </aside>
       <div class="landlord-cards" id="landlord-cards" aria-label="地主牌"></div>
 
       <article class="player opponent left" id="player-1">
         <div class="avatar blue">阿明<span class="landlord-badge">地主</span></div>
-        <div class="player-meta"><b>阿明</b><span><em id="count-1">17</em> 张</span></div>
+        <div class="player-meta"><b>阿明 <small>上家</small></b><span><em id="count-1">17</em> 张</span></div>
         <div class="back-stack" id="backs-1"></div>
       </article>
 
       <article class="player opponent right" id="player-2">
         <div class="avatar rose">小雅<span class="landlord-badge">地主</span></div>
-        <div class="player-meta"><b>小雅</b><span><em id="count-2">17</em> 张</span></div>
+        <div class="player-meta"><b>小雅 <small>下家</small></b><span><em id="count-2">17</em> 张</span></div>
         <div class="back-stack" id="backs-2"></div>
       </article>
 
@@ -40,6 +44,7 @@
       <div class="play-zone center-zone" id="played-0" aria-live="polite"></div>
 
       <div class="table-center">
+        <div class="turn-direction" aria-label="顺时针出牌">顺时针 <span>↻</span></div>
         <div class="round-status" id="round-status">准备发牌</div>
         <div class="last-action" id="last-action">点击开始游戏</div>
       </div>
