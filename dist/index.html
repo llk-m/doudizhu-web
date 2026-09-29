@@ -12,11 +12,11 @@
 <body>
   <main class="game-shell" aria-label="斗地主牌桌">
     <header class="topbar">
-      <div class="brand"><span class="brand-mark">♠</span><div><h1>欢乐斗地主</h1><p>经典三人局 · 单机对战</p></div></div>
+      <div class="brand"><span class="brand-mark">♠</span><div><h1>欢乐斗地主</h1><p>经典三人局 · 策略人机</p></div></div>
       <div class="score-board" aria-label="积分">
         <span>底分 <b id="base-score">1</b></span><i></i><span>倍数 <b id="multiplier">1</b></span>
       </div>
-      <button class="icon-btn" id="rules-btn" aria-label="查看规则">?</button>
+      <div class="top-actions"><span class="ai-badge"><i></i> 智能电脑</span><button class="icon-btn" id="rules-btn" aria-label="查看规则">?</button></div>
     </header>
 
     <section class="table" id="table">
@@ -35,9 +35,9 @@
         <div class="back-stack" id="backs-2"></div>
       </article>
 
-      <div class="play-zone left-zone" id="played-1"></div>
-      <div class="play-zone right-zone" id="played-2"></div>
-      <div class="play-zone center-zone" id="played-0"></div>
+      <div class="play-zone left-zone" id="played-1" aria-live="polite"></div>
+      <div class="play-zone right-zone" id="played-2" aria-live="polite"></div>
+      <div class="play-zone center-zone" id="played-0" aria-live="polite"></div>
 
       <div class="table-center">
         <div class="round-status" id="round-status">准备发牌</div>

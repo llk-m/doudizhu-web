@@ -14,7 +14,8 @@
     return shuffle(deck);
   }
   function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
-  function sortHand(a){return a.sort((x,y)=>x.value-y.value || SUITS.indexOf(x.suit)-SUITS.indexOf(y.suit))}
+  // 高牌在左、低牌在右，符合常见斗地主理牌习惯。
+  function sortHand(a){return a.sort((x,y)=>y.value-x.value || SUITS.indexOf(x.suit)-SUITS.indexOf(y.suit))}
   function counts(cards){const m=new Map();cards.forEach(c=>m.set(c.value,(m.get(c.value)||0)+1));return m}
   function groups(cards){return [...counts(cards)].sort((a,b)=>a[0]-b[0])}
 
@@ -50,6 +51,10 @@
     if(small)return `<div class="mini-card ${red}">${c.rank}${c.suit}</div>`;
     return `<button class="card ${red}" data-id="${c.id}" aria-label="${c.rank}${c.suit}"><span class="card-rank">${c.rank}</span><span class="card-suit">${c.suit}</span><span class="card-big">${c.suit}</span></button>`;
   }
+  function playedCardHTML(c){
+    if(c.rank.includes('王'))return `<div class="card played-card joker ${c.rank==='大王'?'big-joker':'small-joker'}"><span class="card-rank">${c.rank}</span><span class="card-big">★</span></div>`;
+    const red=suitRed(c.suit)?'red':'';return `<div class="card played-card ${red}"><span class="card-rank">${c.rank}</span><span class="card-suit">${c.suit}</span><span class="card-big">${c.suit}</span></div>`;
+  }
   function render(){
     $('#hand').innerHTML=state.players[0].map(c=>cardHTML(c)).join('');
     state.selected.forEach(id=>{const el=document.querySelector(`.card[data-id="${id}"]`);if(el)el.classList.add('selected')});
@@ -69,6 +74,7 @@
   async function startGame(){
     state.gameId++;const gid=state.gameId;Object.assign(state,{players:[[],[],[]],landlord:null,turn:0,phase:'bidding',lastPlay:null,passes:0,selected:new Set(),multiplier:1,bottom:[]});
     const deck=makeDeck();state.bottom=deck.splice(-3);for(let i=0;i<51;i++)state.players[i%3].push(deck[i]);state.players.forEach(sortHand);
+    [0,1,2].forEach(i=>$(`#played-${i}`).innerHTML='');
     $('#landlord-cards').innerHTML=state.bottom.map(()=>'<div class="mini-card hidden">?</div>').join('');setMessage('叫地主','机会与风险都在这三张底牌');render();
     setActions('<button class="btn" id="no-call-btn">不叫</button><button class="btn primary" id="call-btn">叫地主</button>');setHint('你先叫地主');
     state.bidLog=[];state.bidder=0;state.gid=gid;
@@ -77,8 +83,9 @@
   async function nextBid(){
     if(state.bidLog.length>=3){let callers=state.bidLog.filter(x=>x.call);if(!callers.length){setMessage('无人叫地主','重新发牌');await sleep(700);return startGame()}return assignLandlord(callers.at(-1).p)}
     const p=state.bidLog.length;state.bidder=p;setActions('');setHint(`${p===1?'阿明':'小雅'}正在考虑…`);await sleep(650);
-    const strength=state.players[p].reduce((s,c)=>s+(c.value>=14?2:c.value>=11?.5:0),0)+[...counts(state.players[p]).values()].filter(x=>x===4).length*5;
-    const call=Math.random()*13<strength;state.bidLog.push({p,call});setMessage(call?`${p===1?'阿明':'小雅'}叫地主`:`${p===1?'阿明':'小雅'}不叫`);await sleep(500);nextBid();
+    const hand=state.players[p], by=counts(hand), hasRocket=by.has(16)&&by.has(17);
+    const strength=(hasRocket?8:0)+[...by.values()].filter(x=>x===4).length*6+(by.get(17)?4:0)+(by.get(16)?3:0)+(by.get(15)||0)*2+(by.get(14)||0)*.7;
+    const call=strength>=5||(strength>=3&&Math.random()>.28);state.bidLog.push({p,call});setMessage(call?`${p===1?'阿明':'小雅'}叫地主`:`${p===1?'阿明':'小雅'}不叫`);await sleep(500);nextBid();
   }
   function assignLandlord(p){state.landlord=p;state.players[p].push(...state.bottom);sortHand(state.players[p]);state.phase='playing';state.turn=p;$('#landlord-cards').innerHTML=state.bottom.map(c=>cardHTML(c,true)).join('');setMessage(`${p===0?'你':p===1?'阿明':'小雅'}成为地主`,'地主先出牌');render();beginTurn()}
   async function beginTurn(){
@@ -97,16 +104,47 @@
     vals.forEach(v=>{const a=by.get(v);moves.push([a[0]]);if(a.length>=2)moves.push(a.slice(0,2));if(a.length>=3)moves.push(a.slice(0,3));if(a.length===4)moves.push(a.slice(0,4))});
     if(by.has(16)&&by.has(17))moves.push([by.get(16)[0],by.get(17)[0]]);
     vals.forEach(v=>{const a=by.get(v);if(a.length>=3){vals.filter(x=>x!==v).forEach(x=>{moves.push([...a.slice(0,3),by.get(x)[0]]);if(by.get(x).length>=2)moves.push([...a.slice(0,3),...by.get(x).slice(0,2)])})}});
+    vals.filter(v=>by.get(v).length===4).forEach(v=>{
+      const rest=vals.filter(x=>x!==v);combinations(rest,2).forEach(xs=>moves.push([...by.get(v),...xs.map(x=>by.get(x)[0])]));
+      combinations(rest.filter(x=>by.get(x).length>=2),2).forEach(xs=>moves.push([...by.get(v),...xs.flatMap(x=>by.get(x).slice(0,2))]));
+    });
     const normal=vals.filter(v=>v<15);for(let i=0;i<normal.length;i++){for(let j=i+4;j<normal.length;j++){const seq=normal.slice(i,j+1);if(seq.every((v,k)=>!k||v===seq[k-1]+1))moves.push(seq.map(v=>by.get(v)[0]));else break}}
     const pairVals=normal.filter(v=>by.get(v).length>=2);for(let i=0;i<pairVals.length;i++){for(let j=i+2;j<pairVals.length;j++){const seq=pairVals.slice(i,j+1);if(seq.every((v,k)=>!k||v===seq[k-1]+1))moves.push(seq.flatMap(v=>by.get(v).slice(0,2)));else break}}
-    const triVals=normal.filter(v=>by.get(v).length>=3);for(let i=0;i<triVals.length;i++){for(let j=i+1;j<triVals.length;j++){const seq=triVals.slice(i,j+1);if(seq.every((v,k)=>!k||v===seq[k-1]+1))moves.push(seq.flatMap(v=>by.get(v).slice(0,3)));else break}}
-    return moves;
+    const triVals=normal.filter(v=>by.get(v).length>=3);for(let i=0;i<triVals.length;i++){for(let j=i+1;j<triVals.length;j++){const seq=triVals.slice(i,j+1);if(seq.every((v,k)=>!k||v===seq[k-1]+1)){
+      const core=seq.flatMap(v=>by.get(v).slice(0,3));moves.push(core);
+      const rest=vals.filter(v=>!seq.includes(v));
+      combinations(rest,seq.length).forEach(xs=>moves.push([...core,...xs.map(v=>by.get(v)[0])]));
+      combinations(rest.filter(v=>by.get(v).length>=2),seq.length).forEach(xs=>moves.push([...core,...xs.flatMap(v=>by.get(v).slice(0,2))]));
+    }else break}}
+    const unique=new Map();moves.forEach(cards=>unique.set(cards.map(c=>c.id).sort((a,b)=>a-b).join(','),cards));return [...unique.values()];
   }
-  function findMove(hand,target){let moves=generateMoves(hand).map(cards=>({cards,combo:classify(cards)})).filter(x=>x.combo&&beats(x.combo,target));moves.sort((a,b)=>{const bombA=['bomb','rocket'].includes(a.combo.type),bombB=['bomb','rocket'].includes(b.combo.type);if(bombA!==bombB)return bombA?1:-1;if(a.cards.length!==b.cards.length)return b.cards.length-a.cards.length;return a.combo.main-b.combo.main});return moves[0]?.cards||[]}
-  function computerTurn(p){const cards=findMove(state.players[p],state.lastPlay?.combo);if(cards.length){const combo=classify(cards);commitPlay(p,cards,combo)}else commitPass(p)}
+  function handCost(cards){
+    if(!cards.length)return -1000;const by=counts(cards), vals=[...by.keys()].sort((a,b)=>a-b);let cost=vals.length;
+    const normal=vals.filter(v=>v<15);let run=1,bestRun=1;for(let i=1;i<normal.length;i++){run=normal[i]===normal[i-1]+1?run+1:1;bestRun=Math.max(bestRun,run)}if(bestRun>=5)cost-=bestRun-1;
+    const pairs=normal.filter(v=>by.get(v)>=2);run=1;let bestPairs=1;for(let i=1;i<pairs.length;i++){run=pairs[i]===pairs[i-1]+1?run+1:1;bestPairs=Math.max(bestPairs,run)}if(bestPairs>=3)cost-=bestPairs-1;
+    const tripleCount=vals.filter(v=>by.get(v)>=3).length,wingCount=vals.filter(v=>by.get(v)<=2).length;cost-=Math.min(tripleCount,wingCount)*.8;
+    cost+=vals.filter(v=>by.get(v)===1).length*.35;return cost;
+  }
+  function moveScore(p,move,target){
+    const remaining=state.players[p].filter(c=>!move.cards.some(x=>x.id===c.id));if(!remaining.length)return -10000;
+    const danger=Math.min(...state.players.map((h,i)=>i===p?99:h.length));let score=handCost(remaining)*10+move.combo.main*.08;
+    if(['bomb','rocket'].includes(move.combo.type))score+=danger<=3?3:32;
+    if(move.cards.some(c=>c.value>=15)&&remaining.length>5)score+=12;
+    if(!target){score-=move.cards.length*.85;score+=move.combo.main*.32;if(['single','pair'].includes(move.combo.type)&&move.combo.main>=15&&danger>1)score+=24;}
+    const enemySeats=[0,1,2].filter(i=>i!==p&&(state.landlord===p||i===state.landlord));
+    if(enemySeats.some(i=>state.players[i].length===1)&&move.combo.type==='single')score-=move.combo.main*.9;
+    return score;
+  }
+  function findMove(hand,target,p=0){
+    let moves=generateMoves(hand).map(cards=>({cards,combo:classify(cards)})).filter(x=>x.combo&&beats(x.combo,target));if(!moves.length)return [];
+    const teammateLead=target&&state.landlord!==p&&state.lastPlay&&state.landlord!==state.lastPlay.player;
+    if(teammateLead){const winning=moves.find(m=>m.cards.length===hand.length);if(!winning)return [];}
+    moves.sort((a,b)=>moveScore(p,a,target)-moveScore(p,b,target));return moves[0].cards;
+  }
+  function computerTurn(p){const cards=findMove(state.players[p],state.lastPlay?.combo,p);if(cards.length){const combo=classify(cards);commitPlay(p,cards,combo)}else commitPass(p)}
   function commitPlay(p,cards,combo){state.players[p]=state.players[p].filter(c=>!cards.some(x=>x.id===c.id));state.lastPlay={player:p,combo,cards};state.passes=0;if(combo.type==='bomb'||combo.type==='rocket')state.multiplier*=2;showPlayed(p,cards);setMessage(`${p===0?'你':p===1?'阿明':'小雅'}出了${typeName[combo.type]}`,combo.type==='bomb'||combo.type==='rocket'?'倍数翻倍！':'');render();if(!state.players[p].length)return finish(p);state.turn=(p+1)%3;setTimeout(beginTurn,550)}
   function commitPass(p){showPlayed(p,[]);state.passes++;setMessage(`${p===0?'你':p===1?'阿明':'小雅'}选择不出`);if(state.passes>=2){const leader=state.lastPlay.player;state.lastPlay=null;state.passes=0;state.turn=leader}else state.turn=(p+1)%3;render();setTimeout(beginTurn,450)}
-  function showPlayed(p,cards){const z=$(`#played-${p}`);if(!cards.length){z.innerHTML='<span style="color:#c7d8d1;padding:16px">不出</span>';return}z.innerHTML=sortHand([...cards]).map(c=>cardHTML(c)).join('').replaceAll('class="card','class="card played-card')}
+  function showPlayed(p,cards){const z=$(`#played-${p}`),name=p===0?'你':p===1?'阿明':'小雅';if(!cards.length){z.innerHTML=`<span class="pass-bubble">${name} · 不出</span>`;return}const combo=classify(cards);z.innerHTML=`<span class="play-label">${name} · ${typeName[combo.type]}</span><div class="played-cards">${sortHand([...cards]).map(playedCardHTML).join('')}</div>`;z.classList.remove('dealt');void z.offsetWidth;z.classList.add('dealt')}
   function finish(winner){state.phase='over';const humanWin=winner===0||(state.landlord!==0&&winner!==state.landlord);const delta=state.multiplier*(state.landlord===0?2:1)*(humanWin?1:-1);$('#result-icon').textContent=humanWin?'胜':'负';$('#result-title').textContent=humanWin?'本局获胜':'再接再厉';$('#result-copy').textContent=humanWin?'配合漂亮，牌桌由你掌控。':'差一点就赢了，调整策略再来一局。';$('#result-score').textContent=(delta>0?'+':'')+delta;setActions('<button class="btn primary" id="start-btn">再来一局</button>');setHint('本局结束');render();setTimeout(()=>$('#result-dialog').showModal(),450)}
 
   $('#rules-btn').addEventListener('click',()=>$('#rules-dialog').showModal());$('#rules-dialog .close-btn').addEventListener('click',()=>$('#rules-dialog').close());$('#again-btn').addEventListener('click',()=>{$('#result-dialog').close();startGame()});bindActions();
