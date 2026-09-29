@@ -3,7 +3,7 @@
   const SUITS = ['♠','♥','♣','♦'];
   const TURN_ORDER = [0,1,2];
   const VALUE = Object.fromEntries(RANKS.map((r,i)=>[r,i+3]));
-  const state = { players:[[],[],[]], landlord:null, turn:0, phase:'idle', lastPlay:null, passes:0, selected:new Set(), multiplier:1, bottom:[], gameId:0, seenIds:new Set(), seenRanks:new Map() };
+  const state = { players:[[],[],[]], landlord:null, turn:0, phase:'idle', lastPlay:null, passes:0, selected:new Set(), multiplier:1, bottom:[], gameId:0, seenIds:new Set(), seenRanks:new Map(), visibleActions:[] };
   const $ = s => document.querySelector(s);
   const sleep = ms => new Promise(r=>setTimeout(r,ms));
   const suitRed = s => s==='♥'||s==='♦';
@@ -76,10 +76,17 @@
     $('#start-btn')?.addEventListener('click',startGame);$('#call-btn')?.addEventListener('click',()=>humanBid(true));$('#no-call-btn')?.addEventListener('click',()=>humanBid(false));
     $('#play-btn')?.addEventListener('click',humanPlay);$('#pass-btn')?.addEventListener('click',humanPass);$('#suggest-btn')?.addEventListener('click',suggestPlay);
   }
-  $('#hand').addEventListener('click',e=>{const card=e.target.closest('.card');if(!card||state.phase!=='playing'||state.turn!==0)return;const id=Number(card.dataset.id);state.selected.has(id)?state.selected.delete(id):state.selected.add(id);render();validateSelection()});
+  const handEl=$('#hand');let dragMode=null,dragPointer=null,ignorePointerClick=false,dragVisited=new Set();
+  function canChoose(card){return card&&card.closest('#hand')===handEl&&state.phase==='playing'&&state.turn===0}
+  function setCardChoice(card,selected){const id=Number(card.dataset.id);selected?state.selected.add(id):state.selected.delete(id);card.classList.toggle('selected',selected)}
+  handEl.addEventListener('pointerdown',e=>{const card=e.target.closest('.card');if(!canChoose(card))return;dragPointer=e.pointerId;dragMode=!state.selected.has(Number(card.dataset.id));dragVisited=new Set();ignorePointerClick=true;handEl.setPointerCapture?.(e.pointerId);dragVisited.add(card.dataset.id);setCardChoice(card,dragMode);validateSelection();e.preventDefault()});
+  handEl.addEventListener('pointermove',e=>{if(e.pointerId!==dragPointer||dragMode===null)return;const card=document.elementFromPoint(e.clientX,e.clientY)?.closest('.card');if(canChoose(card)&&!dragVisited.has(card.dataset.id)){dragVisited.add(card.dataset.id);setCardChoice(card,dragMode);validateSelection()}const rect=handEl.getBoundingClientRect();if(e.clientX<rect.left+34)handEl.scrollLeft-=12;if(e.clientX>rect.right-34)handEl.scrollLeft+=12;e.preventDefault()});
+  function endDrag(e){if(e.pointerId!==dragPointer)return;dragMode=null;dragPointer=null;dragVisited.clear();setTimeout(()=>{ignorePointerClick=false},500)}
+  handEl.addEventListener('pointerup',endDrag);handEl.addEventListener('pointercancel',endDrag);
+  handEl.addEventListener('click',e=>{if(ignorePointerClick){ignorePointerClick=false;return}const card=e.target.closest('.card');if(!canChoose(card))return;setCardChoice(card,!state.selected.has(Number(card.dataset.id)));validateSelection()});
 
   async function startGame(){
-    state.gameId++;const gid=state.gameId;Object.assign(state,{players:[[],[],[]],landlord:null,turn:0,phase:'bidding',lastPlay:null,passes:0,selected:new Set(),multiplier:1,bottom:[],seenIds:new Set(),seenRanks:new Map()});
+    state.gameId++;const gid=state.gameId;Object.assign(state,{players:[[],[],[]],landlord:null,turn:0,phase:'bidding',lastPlay:null,passes:0,selected:new Set(),multiplier:1,bottom:[],seenIds:new Set(),seenRanks:new Map(),visibleActions:[]});
     const deck=makeDeck();state.bottom=deck.splice(-3);for(let i=0;i<51;i++)state.players[i%3].push(deck[i]);state.players.forEach(sortHand);
     markSeen(state.players[0]);
     [0,1,2].forEach(i=>$(`#played-${i}`).innerHTML='');
@@ -150,10 +157,13 @@
     moves.sort((a,b)=>moveScore(p,a,target)-moveScore(p,b,target));return moves[0].cards;
   }
   function computerTurn(p){const cards=findMove(state.players[p],state.lastPlay?.combo,p);if(cards.length){const combo=classify(cards);commitPlay(p,cards,combo)}else commitPass(p)}
-  function clearPlayedZones(){[0,1,2].forEach(i=>{$(`#played-${i}`).innerHTML='';$(`#played-${i}`).classList.remove('dealt')})}
-  function commitPlay(p,cards,combo){state.players[p]=state.players[p].filter(c=>!cards.some(x=>x.id===c.id));markSeen(cards);state.lastPlay={player:p,combo,cards};state.passes=0;if(combo.type==='bomb'||combo.type==='rocket')state.multiplier*=2;clearPlayedZones();showPlayed(p,cards);setMessage(`${seatName(p)}出了${typeName[combo.type]}`,combo.type==='bomb'||combo.type==='rocket'?'倍数翻倍！':'传给下一家');render();if(!state.players[p].length)return finish(p);state.turn=nextSeat(p);setTimeout(beginTurn,550)}
-  function commitPass(p){clearPlayedZones();showPlayed(p,[]);state.passes++;setMessage(`${seatName(p)}选择不出`,'传给下一家');if(state.passes>=2){const leader=state.lastPlay.player;state.lastPlay=null;state.passes=0;state.turn=leader}else state.turn=nextSeat(p);render();setTimeout(beginTurn,450)}
-  function showPlayed(p,cards){const z=$(`#played-${p}`),name=seatName(p);if(!cards.length){z.innerHTML=`<span class="pass-bubble">${name} · 不出</span>`;return}const combo=classify(cards);z.innerHTML=`<span class="play-label">${name} · ${typeName[combo.type]}</span><div class="played-cards">${sortHand([...cards]).map(playedCardHTML).join('')}</div>`;z.classList.remove('dealt');void z.offsetWidth;z.classList.add('dealt')}
+  function commitPlay(p,cards,combo){state.players[p]=state.players[p].filter(c=>!cards.some(x=>x.id===c.id));markSeen(cards);state.lastPlay={player:p,combo,cards};state.passes=0;if(combo.type==='bomb'||combo.type==='rocket')state.multiplier*=2;showPlayed(p,cards);setMessage(`${seatName(p)}出了${typeName[combo.type]}`,combo.type==='bomb'||combo.type==='rocket'?'倍数翻倍！':'传给下一家');render();if(!state.players[p].length)return finish(p);state.turn=nextSeat(p);setTimeout(beginTurn,550)}
+  function commitPass(p){showPlayed(p,[]);state.passes++;setMessage(`${seatName(p)}选择不出`,'传给下一家');if(state.passes>=2){const leader=state.lastPlay.player;state.lastPlay=null;state.passes=0;state.turn=leader}else state.turn=nextSeat(p);render();setTimeout(beginTurn,450)}
+  function showPlayed(p,cards){
+    state.visibleActions=state.visibleActions.filter(seat=>seat!==p);state.visibleActions.push(p);
+    while(state.visibleActions.length>2){const oldest=state.visibleActions.shift(),oldZone=$(`#played-${oldest}`);oldZone.innerHTML='';oldZone.classList.remove('dealt')}
+    const z=$(`#played-${p}`),name=seatName(p);z.innerHTML='';if(!cards.length){z.innerHTML=`<span class="pass-bubble">${name} · 不出</span>`;return}const combo=classify(cards);z.innerHTML=`<span class="play-label">${name} · ${typeName[combo.type]}</span><div class="played-cards">${sortHand([...cards]).map(playedCardHTML).join('')}</div>`;z.classList.remove('dealt');void z.offsetWidth;z.classList.add('dealt')
+  }
   function finish(winner){state.phase='over';const humanWin=winner===0||(state.landlord!==0&&winner!==state.landlord);const delta=state.multiplier*(state.landlord===0?2:1)*(humanWin?1:-1);$('#result-icon').textContent=humanWin?'胜':'负';$('#result-title').textContent=humanWin?'本局获胜':'再接再厉';$('#result-copy').textContent=humanWin?'配合漂亮，牌桌由你掌控。':'差一点就赢了，调整策略再来一局。';$('#result-score').textContent=(delta>0?'+':'')+delta;setActions('<button class="btn primary" id="start-btn">再来一局</button>');setHint('本局结束');render();setTimeout(()=>$('#result-dialog').showModal(),450)}
 
   $('#rules-btn').addEventListener('click',()=>$('#rules-dialog').showModal());$('#rules-dialog .close-btn').addEventListener('click',()=>$('#rules-dialog').close());$('#again-btn').addEventListener('click',()=>{$('#result-dialog').close();startGame()});bindActions();
