@@ -10,6 +10,25 @@
   const seatName = p => p===0?'你':p===1?'阿明':'小雅';
   const nextSeat = p => TURN_ORDER[(TURN_ORDER.indexOf(p)+1)%TURN_ORDER.length];
 
+  // 原创五声音阶牌桌配乐：由 Web Audio 实时合成，无需下载音频文件。
+  const music = { enabled:localStorage.getItem('ddz-music')==='on', ctx:null, timer:null, beat:0 };
+  const MELODY = [0,2,4,7,4,2,0,2,4,9,7,4,2,-1,0,2];
+  function pluck(freq,when,duration=.25,volume=.035,type='triangle'){
+    const osc=music.ctx.createOscillator(),gain=music.ctx.createGain();osc.type=type;osc.frequency.setValueAtTime(freq,when);gain.gain.setValueAtTime(.0001,when);gain.gain.exponentialRampToValueAtTime(volume,when+.012);gain.gain.exponentialRampToValueAtTime(.0001,when+duration);osc.connect(gain).connect(music.ctx.destination);osc.start(when);osc.stop(when+duration+.03);
+  }
+  function musicTick(){
+    if(!music.enabled||!music.ctx)return;const now=music.ctx.currentTime+.02,n=MELODY[music.beat%MELODY.length];
+    if(n>=0)pluck(220*Math.pow(2,n/12),now,.28,.03,'triangle');
+    if(music.beat%4===0)pluck(110*Math.pow(2,[0,0,5,7][Math.floor(music.beat/4)%4]/12),now,.42,.022,'sine');
+    if(music.beat%2===1)pluck(880,now,.045,.008,'square');music.beat++;
+  }
+  function updateMusicButton(){const b=$('#music-btn');if(!b)return;b.classList.toggle('music-on',music.enabled);b.setAttribute('aria-pressed',String(music.enabled));b.setAttribute('aria-label',music.enabled?'关闭背景音乐':'开启背景音乐');b.title=music.enabled?'关闭背景音乐':'开启背景音乐'}
+  async function startMusic(){
+    if(!music.ctx)music.ctx=new (window.AudioContext||window.webkitAudioContext)();await music.ctx.resume();clearInterval(music.timer);musicTick();music.timer=setInterval(musicTick,300);
+  }
+  function stopMusic(){clearInterval(music.timer);music.timer=null;if(music.ctx?.state==='running')music.ctx.suspend()}
+  async function toggleMusic(){music.enabled=!music.enabled;localStorage.setItem('ddz-music',music.enabled?'on':'off');updateMusicButton();if(music.enabled)await startMusic();else stopMusic()}
+
   function makeDeck(){
     const deck=[]; let id=0;
     for(const rank of RANKS.slice(0,13)) for(const suit of SUITS) deck.push({id:id++,rank,suit,value:VALUE[rank]});
@@ -86,6 +105,7 @@
   handEl.addEventListener('click',e=>{if(ignorePointerClick){ignorePointerClick=false;return}const card=e.target.closest('.card');if(!canChoose(card))return;setCardChoice(card,!state.selected.has(Number(card.dataset.id)));validateSelection()});
 
   async function startGame(){
+    if(music.enabled)startMusic().catch(()=>{});
     state.gameId++;const gid=state.gameId;Object.assign(state,{players:[[],[],[]],landlord:null,turn:0,phase:'bidding',lastPlay:null,passes:0,selected:new Set(),multiplier:1,bottom:[],seenIds:new Set(),seenRanks:new Map(),visibleActions:[]});
     const deck=makeDeck();state.bottom=deck.splice(-3);for(let i=0;i<51;i++)state.players[i%3].push(deck[i]);state.players.forEach(sortHand);
     markSeen(state.players[0]);
@@ -98,9 +118,11 @@
   async function nextBid(){
     if(state.bidLog.length>=3){let callers=state.bidLog.filter(x=>x.call);if(!callers.length){setMessage('无人叫地主','重新发牌');await sleep(700);return startGame()}return assignLandlord(callers.at(-1).p)}
     const p=TURN_ORDER[state.bidLog.length];state.bidder=p;setActions('');setHint(`${seatName(p)}正在考虑…`);await sleep(650);
-    const hand=state.players[p], by=counts(hand), hasRocket=by.has(16)&&by.has(17);
-    const strength=(hasRocket?8:0)+[...by.values()].filter(x=>x===4).length*6+(by.get(17)?4:0)+(by.get(16)?3:0)+(by.get(15)||0)*2+(by.get(14)||0)*.7;
-    const call=strength>=5||(strength>=3&&Math.random()>.28);state.bidLog.push({p,call});setMessage(call?`${seatName(p)}叫地主`:`${seatName(p)}不叫`);await sleep(500);nextBid();
+    const hand=state.players[p], by=counts(hand), vals=[...by.keys()].sort((a,b)=>a-b),hasRocket=by.has(16)&&by.has(17);
+    const triples=vals.filter(v=>by.get(v)>=3).length,pairs=vals.filter(v=>by.get(v)>=2).length;
+    let longest=1,run=1;for(let i=1;i<vals.length;i++){run=vals[i]<15&&vals[i]===vals[i-1]+1?run+1:1;longest=Math.max(longest,run)}
+    const strength=(hasRocket?8:0)+[...by.values()].filter(x=>x===4).length*5+(by.get(17)?3.5:0)+(by.get(16)?2.5:0)+(by.get(15)||0)*1.7+(by.get(14)||0)*.55+triples*.75+pairs*.18+(longest>=5?1.2:0);
+    const call=strength>=6||(strength>=4.4&&Math.random()>.18);state.bidLog.push({p,call});setMessage(call?`${seatName(p)}叫地主`:`${seatName(p)}不叫`);await sleep(500);nextBid();
   }
   function assignLandlord(p){state.landlord=p;state.players[p].push(...state.bottom);if(p===0)markSeen(state.bottom);sortHand(state.players[p]);state.phase='playing';state.turn=p;$('#landlord-cards').innerHTML=state.bottom.map(c=>cardHTML(c,true)).join('');setMessage(`${seatName(p)}成为地主`,'地主先出牌 · 顺时针');render();beginTurn()}
   async function beginTurn(){
@@ -138,22 +160,34 @@
     const normal=vals.filter(v=>v<15);let run=1,bestRun=1;for(let i=1;i<normal.length;i++){run=normal[i]===normal[i-1]+1?run+1:1;bestRun=Math.max(bestRun,run)}if(bestRun>=5)cost-=bestRun-1;
     const pairs=normal.filter(v=>by.get(v)>=2);run=1;let bestPairs=1;for(let i=1;i<pairs.length;i++){run=pairs[i]===pairs[i-1]+1?run+1:1;bestPairs=Math.max(bestPairs,run)}if(bestPairs>=3)cost-=bestPairs-1;
     const tripleCount=vals.filter(v=>by.get(v)>=3).length,wingCount=vals.filter(v=>by.get(v)<=2).length;cost-=Math.min(tripleCount,wingCount)*.8;
-    cost+=vals.filter(v=>by.get(v)===1).length*.35;return cost;
+    cost+=vals.filter(v=>by.get(v)===1).length*.42;cost-=vals.filter(v=>by.get(v)===4).length*.5;return cost;
+  }
+  function enemiesOf(p){return [0,1,2].filter(i=>i!==p&&(state.landlord===p||i===state.landlord))}
+  function isTeammate(p,i){return p!==state.landlord&&i!==state.landlord&&p!==i}
+  function followUpQuality(cards){
+    if(!cards.length)return -4;const moves=generateMoves(cards).map(x=>({cards:x,combo:classify(x)})).filter(x=>x.combo);if(!moves.length)return 20;
+    const biggest=Math.max(...moves.map(x=>x.cards.length));const finishers=moves.filter(x=>x.cards.length===cards.length).length;return handCost(cards)*4-biggest*1.15-finishers*30;
   }
   function moveScore(p,move,target){
     const remaining=state.players[p].filter(c=>!move.cards.some(x=>x.id===c.id));if(!remaining.length)return -10000;
-    const danger=Math.min(...state.players.map((h,i)=>i===p?99:h.length));let score=handCost(remaining)*10+move.combo.main*.08;
-    if(['bomb','rocket'].includes(move.combo.type))score+=danger<=3?3:32;
-    if(move.cards.some(c=>c.value>=15)&&remaining.length>5)score+=12;
-    if(!target){score-=move.cards.length*.85;score+=move.combo.main*.32;if(['single','pair'].includes(move.combo.type)&&move.combo.main>=15&&danger>1)score+=24;}
-    const enemySeats=[0,1,2].filter(i=>i!==p&&(state.landlord===p||i===state.landlord));
-    if(enemySeats.some(i=>state.players[i].length===1)&&move.combo.type==='single')score-=move.combo.main*.9;
+    const enemies=enemiesOf(p),danger=Math.min(...enemies.map(i=>state.players[i].length));let score=handCost(remaining)*8+followUpQuality(remaining)+move.combo.main*.08;
+    if(['bomb','rocket'].includes(move.combo.type))score+=danger<=2?1:36;
+    if(move.cards.some(c=>c.value>=15)&&remaining.length>4)score+=danger<=2?2:13;
+    if(!target){
+      score-=move.cards.length*1.15;score+=move.combo.main*.3;
+      if(['single','pair'].includes(move.combo.type)&&move.combo.main>=15&&danger>2)score+=25;
+      if(danger===1&&move.combo.type==='single')score+=42-move.combo.main*1.6;
+      if(danger===1&&move.combo.type!=='single')score-=12;
+      const mate=[0,1,2].find(i=>isTeammate(p,i));if(mate!==undefined&&state.players[mate].length===1&&move.combo.type==='single')score+=move.combo.main*.7-14;
+    }
+    if(enemies.some(i=>state.players[i].length===1)&&move.combo.type==='single')score-=move.combo.main*1.15;
+    if(target&&state.lastPlay&&enemies.includes(state.lastPlay.player)&&danger<=2)score-=move.combo.main*.35;
     return score;
   }
   function findMove(hand,target,p=0){
     let moves=generateMoves(hand).map(cards=>({cards,combo:classify(cards)})).filter(x=>x.combo&&beats(x.combo,target));if(!moves.length)return [];
     const teammateLead=target&&state.landlord!==p&&state.lastPlay&&state.landlord!==state.lastPlay.player;
-    if(teammateLead){const winning=moves.find(m=>m.cards.length===hand.length);if(!winning)return [];}
+    if(teammateLead){const winning=moves.find(m=>m.cards.length===hand.length),landlordDanger=state.players[state.landlord].length<=2;if(winning)return winning.cards;if(!landlordDanger)return [];moves=moves.filter(m=>!['bomb','rocket'].includes(m.combo.type));if(!moves.length)return [];}
     moves.sort((a,b)=>moveScore(p,a,target)-moveScore(p,b,target));return moves[0].cards;
   }
   function computerTurn(p){const cards=findMove(state.players[p],state.lastPlay?.combo,p);if(cards.length){const combo=classify(cards);commitPlay(p,cards,combo)}else commitPass(p)}
@@ -166,6 +200,8 @@
   }
   function finish(winner){state.phase='over';const humanWin=winner===0||(state.landlord!==0&&winner!==state.landlord);const delta=state.multiplier*(state.landlord===0?2:1)*(humanWin?1:-1);$('#result-icon').textContent=humanWin?'胜':'负';$('#result-title').textContent=humanWin?'本局获胜':'再接再厉';$('#result-copy').textContent=humanWin?'配合漂亮，牌桌由你掌控。':'差一点就赢了，调整策略再来一局。';$('#result-score').textContent=(delta>0?'+':'')+delta;setActions('<button class="btn primary" id="start-btn">再来一局</button>');setHint('本局结束');render();setTimeout(()=>$('#result-dialog').showModal(),450)}
 
+  $('#music-btn').addEventListener('click',toggleMusic);updateMusicButton();
+  document.addEventListener('visibilitychange',()=>{if(document.hidden)stopMusic();else if(music.enabled)startMusic().catch(()=>{})});
   $('#rules-btn').addEventListener('click',()=>$('#rules-dialog').showModal());$('#rules-dialog .close-btn').addEventListener('click',()=>$('#rules-dialog').close());$('#again-btn').addEventListener('click',()=>{$('#result-dialog').close();startGame()});bindActions();
 
   function requireEmptyInput(input){if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).length)throw new Error('此操作不接受参数')}
