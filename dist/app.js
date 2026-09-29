@@ -196,13 +196,19 @@
     for(const [v,n] of used){penalty+=n*(v>=16?34:v===15?25:v===14?8:v*.16);if((original.get(v)||0)>n)penalty+=6}
     return penalty;
   }
+  function controlCardPenalty(move,target,danger,remaining){
+    if(!remaining.length||danger<=2)return 0;const simple=['single','pair','triple','triple1','triple2'].includes(move.combo.type);if(!simple)return 0;
+    let penalty=0;for(const c of move.cards){if(c.value===14)penalty+=3;else if(c.value===15)penalty+=9;else if(c.value===16)penalty+=15;else if(c.value===17)penalty+=20}
+    if(target&&move.combo.type===target.type)penalty+=Math.max(0,move.combo.main-target.main-1)*2.4;
+    return penalty;
+  }
   function moveScore(p,move,target){
     const remaining=state.players[p].filter(c=>!move.cards.some(x=>x.id===c.id));if(!remaining.length)return -10000;
-    const enemies=enemiesOf(p),danger=Math.min(...enemies.map(i=>state.players[i].length));let score=handCost(remaining)*8+followUpQuality(remaining)+move.combo.main*.08+attachmentPenalty(p,move);
+    const enemies=enemiesOf(p),danger=Math.min(...enemies.map(i=>state.players[i].length));let score=handCost(remaining)*8+followUpQuality(remaining)+move.combo.main*.08+attachmentPenalty(p,move)+controlCardPenalty(move,target,danger,remaining);
     if(['bomb','rocket'].includes(move.combo.type))score+=danger<=2?1:36;
     if(move.cards.some(c=>c.value>=15)&&remaining.length>4)score+=danger<=2?2:13;
     if(!target){
-      score-=move.cards.length*1.15;score+=move.combo.main*.3;
+      score-=move.cards.length*1.15;score+=move.combo.main*.72;
       if(['single','pair'].includes(move.combo.type)&&move.combo.main>=15&&danger>2)score+=25;
       if(danger===1&&move.combo.type==='single')score+=42-move.combo.main*1.6;
       if(danger===1&&move.combo.type!=='single')score-=12;
@@ -214,6 +220,9 @@
   }
   function findMove(hand,target,p=0){
     let moves=generateMoves(hand).map(cards=>({cards,combo:classify(cards)})).filter(x=>x.combo&&beats(x.combo,target));if(!moves.length)return [];
+    if(target&&!['bomb','rocket'].includes(target.type)){
+      const sameType=moves.filter(m=>m.combo.type===target.type&&m.combo.len===target.len);if(sameType.length){moves=sameType;const danger=Math.min(...enemiesOf(p).map(i=>state.players[i].length)),minMain=Math.min(...moves.map(m=>m.combo.main));if(danger>2){const restrained=moves.filter(m=>m.combo.main<=minMain+1||m.cards.length===hand.length);if(restrained.length)moves=restrained}}
+    }
     if(!target){const sensible=moves.filter(m=>!['four2','four2pairs','bomb','rocket'].includes(m.combo.type));if(sensible.length)moves=sensible}
     const teammateLead=target&&state.landlord!==p&&state.lastPlay&&state.landlord!==state.lastPlay.player;
     if(teammateLead){const winning=moves.find(m=>m.cards.length===hand.length),landlordDanger=state.players[state.landlord].length<=2;if(winning)return winning.cards;if(!landlordDanger)return [];moves=moves.filter(m=>!['bomb','rocket'].includes(m.combo.type));if(!moves.length)return [];}
