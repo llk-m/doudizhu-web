@@ -121,6 +121,7 @@
   handEl.addEventListener('click',e=>{if(ignorePointerClick){ignorePointerClick=false;return}const card=e.target.closest('.card');if(!canChoose(card))return;setCardChoice(card,!state.selected.has(Number(card.dataset.id)));validateSelection()});
 
   async function startGame(){
+    if(innerWidth<=900&&innerHeight>innerWidth&&!document.fullscreenElement)enterLandscape();
     if(music.enabled)startMusic().catch(()=>{});
     state.gameId++;const gid=state.gameId;Object.assign(state,{players:[[],[],[]],landlord:null,turn:0,phase:'bidding',lastPlay:null,passes:0,selected:new Set(),multiplier:1,bottom:[],seenIds:new Set(),seenRanks:new Map(),visibleActions:[]});
     const deck=makeDeck();state.bottom=deck.splice(-3);for(let i=0;i<51;i++)state.players[i%3].push(deck[i]);state.players.forEach(sortHand);
