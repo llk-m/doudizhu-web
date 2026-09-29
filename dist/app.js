@@ -1,7 +1,7 @@
 (() => {
   const RANKS = ['3','4','5','6','7','8','9','10','J','Q','K','A','2','小王','大王'];
   const SUITS = ['♠','♥','♣','♦'];
-  const TURN_ORDER = [0,2,1];
+  const TURN_ORDER = [0,1,2];
   const VALUE = Object.fromEntries(RANKS.map((r,i)=>[r,i+3]));
   const state = { players:[[],[],[]], landlord:null, turn:0, phase:'idle', lastPlay:null, passes:0, selected:new Set(), multiplier:1, bottom:[], gameId:0, seenIds:new Set(), seenRanks:new Map() };
   const $ = s => document.querySelector(s);
@@ -23,7 +23,7 @@
   function groups(cards){return [...counts(cards)].sort((a,b)=>a[0]-b[0])}
   function markSeen(cards){cards.forEach(c=>{if(state.seenIds.has(c.id))return;state.seenIds.add(c.id);state.seenRanks.set(c.rank,(state.seenRanks.get(c.rank)||0)+1)})}
   function renderCounter(){
-    const el=$('#counter-grid');if(!el)return;el.innerHTML=RANKS.map(rank=>{const total=rank.includes('王')?1:4,left=Math.max(0,total-(state.seenRanks.get(rank)||0));return `<div class="counter-cell ${left===0?'empty':''}"><b>${rank==='小王'?'小':rank==='大王'?'大':rank}</b><span>${left}</span></div>`}).join('');
+    const el=$('#counter-grid');if(!el)return;el.innerHTML=[...RANKS].reverse().map(rank=>{const total=rank.includes('王')?1:4,left=Math.max(0,total-(state.seenRanks.get(rank)||0));return `<div class="counter-cell ${left===0?'empty':''}"><b>${rank==='小王'?'小':rank==='大王'?'大':rank}</b><span>${left}</span></div>`}).join('');
   }
 
   function classify(cards){
@@ -150,8 +150,9 @@
     moves.sort((a,b)=>moveScore(p,a,target)-moveScore(p,b,target));return moves[0].cards;
   }
   function computerTurn(p){const cards=findMove(state.players[p],state.lastPlay?.combo,p);if(cards.length){const combo=classify(cards);commitPlay(p,cards,combo)}else commitPass(p)}
-  function commitPlay(p,cards,combo){state.players[p]=state.players[p].filter(c=>!cards.some(x=>x.id===c.id));markSeen(cards);state.lastPlay={player:p,combo,cards};state.passes=0;if(combo.type==='bomb'||combo.type==='rocket')state.multiplier*=2;showPlayed(p,cards);setMessage(`${seatName(p)}出了${typeName[combo.type]}`,combo.type==='bomb'||combo.type==='rocket'?'倍数翻倍！':'顺时针传给下一家');render();if(!state.players[p].length)return finish(p);state.turn=nextSeat(p);setTimeout(beginTurn,550)}
-  function commitPass(p){showPlayed(p,[]);state.passes++;setMessage(`${seatName(p)}选择不出`,'顺时针传给下一家');if(state.passes>=2){const leader=state.lastPlay.player;state.lastPlay=null;state.passes=0;state.turn=leader}else state.turn=nextSeat(p);render();setTimeout(beginTurn,450)}
+  function clearPlayedZones(){[0,1,2].forEach(i=>{$(`#played-${i}`).innerHTML='';$(`#played-${i}`).classList.remove('dealt')})}
+  function commitPlay(p,cards,combo){state.players[p]=state.players[p].filter(c=>!cards.some(x=>x.id===c.id));markSeen(cards);state.lastPlay={player:p,combo,cards};state.passes=0;if(combo.type==='bomb'||combo.type==='rocket')state.multiplier*=2;clearPlayedZones();showPlayed(p,cards);setMessage(`${seatName(p)}出了${typeName[combo.type]}`,combo.type==='bomb'||combo.type==='rocket'?'倍数翻倍！':'传给下一家');render();if(!state.players[p].length)return finish(p);state.turn=nextSeat(p);setTimeout(beginTurn,550)}
+  function commitPass(p){clearPlayedZones();showPlayed(p,[]);state.passes++;setMessage(`${seatName(p)}选择不出`,'传给下一家');if(state.passes>=2){const leader=state.lastPlay.player;state.lastPlay=null;state.passes=0;state.turn=leader}else state.turn=nextSeat(p);render();setTimeout(beginTurn,450)}
   function showPlayed(p,cards){const z=$(`#played-${p}`),name=seatName(p);if(!cards.length){z.innerHTML=`<span class="pass-bubble">${name} · 不出</span>`;return}const combo=classify(cards);z.innerHTML=`<span class="play-label">${name} · ${typeName[combo.type]}</span><div class="played-cards">${sortHand([...cards]).map(playedCardHTML).join('')}</div>`;z.classList.remove('dealt');void z.offsetWidth;z.classList.add('dealt')}
   function finish(winner){state.phase='over';const humanWin=winner===0||(state.landlord!==0&&winner!==state.landlord);const delta=state.multiplier*(state.landlord===0?2:1)*(humanWin?1:-1);$('#result-icon').textContent=humanWin?'胜':'负';$('#result-title').textContent=humanWin?'本局获胜':'再接再厉';$('#result-copy').textContent=humanWin?'配合漂亮，牌桌由你掌控。':'差一点就赢了，调整策略再来一局。';$('#result-score').textContent=(delta>0?'+':'')+delta;setActions('<button class="btn primary" id="start-btn">再来一局</button>');setHint('本局结束');render();setTimeout(()=>$('#result-dialog').showModal(),450)}
 
