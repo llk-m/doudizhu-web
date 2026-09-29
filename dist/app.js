@@ -9,6 +9,8 @@
   const suitRed = s => s==='♥'||s==='♦';
   const seatName = p => p===0?'你':p===1?'阿明':'小雅';
   const nextSeat = p => TURN_ORDER[(TURN_ORDER.indexOf(p)+1)%TURN_ORDER.length];
+  function loadScoreHistory(){try{const v=JSON.parse(localStorage.getItem('ddz-score-history')||'[]');return Array.isArray(v)?v.slice(0,30):[]}catch{return []}}
+  const scoreHistory=loadScoreHistory();
 
   // 原创五声音阶牌桌配乐：由 Web Audio 实时合成，无需下载音频文件。
   const music = { enabled:localStorage.getItem('ddz-music')==='on', ctx:null, timer:null, beat:0 };
@@ -43,6 +45,15 @@
   function markSeen(cards){cards.forEach(c=>{if(state.seenIds.has(c.id))return;state.seenIds.add(c.id);state.seenRanks.set(c.rank,(state.seenRanks.get(c.rank)||0)+1)})}
   function renderCounter(){
     const el=$('#counter-grid');if(!el)return;el.innerHTML=[...RANKS].reverse().map(rank=>{const total=rank.includes('王')?1:4,left=Math.max(0,total-(state.seenRanks.get(rank)||0));return `<div class="counter-cell ${left===0?'empty':''}"><b>${rank==='小王'?'小':rank==='大王'?'大':rank}</b><span>${left}</span></div>`}).join('');
+  }
+  function renderScoreHistory(){
+    const total=scoreHistory.reduce((sum,x)=>sum+x.delta,0),wins=scoreHistory.filter(x=>x.delta>0).length;
+    $('#total-score').textContent=(total>0?'+':'')+total;$('#history-total').textContent=(total>0?'+':'')+total;$('#history-wins').textContent=wins;$('#history-losses').textContent=scoreHistory.length-wins;
+    $('#score-history').innerHTML=scoreHistory.length?scoreHistory.map(x=>`<div class="score-row"><strong class="${x.delta>0?'win':'loss'}">${x.delta>0?'胜':'负'}</strong><span>${x.role} · ${x.multiplier}倍<br><small>${x.time}</small></span><b>${x.delta>0?'+':''}${x.delta}</b></div>`).join(''):'<p>完成一局后会显示记录</p>';
+  }
+  function recordScore(delta){scoreHistory.unshift({delta,role:state.landlord===0?'地主':'农民',multiplier:state.multiplier,time:new Date().toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})});scoreHistory.splice(30);localStorage.setItem('ddz-score-history',JSON.stringify(scoreHistory));renderScoreHistory()}
+  async function enterLandscape(){
+    try{if(document.documentElement.requestFullscreen&&!document.fullscreenElement)await document.documentElement.requestFullscreen();if(screen.orientation?.lock)await screen.orientation.lock('landscape');setHint('已进入横屏模式')}catch{setHint('请关闭手机竖屏锁定后，将手机横过来')}
   }
 
   function classify(cards){
@@ -214,13 +225,14 @@
     while(state.visibleActions.length>2){const oldest=state.visibleActions.shift(),oldZone=$(`#played-${oldest}`);oldZone.innerHTML='';oldZone.classList.remove('dealt')}
     const z=$(`#played-${p}`),name=seatName(p);z.innerHTML='';if(!cards.length){z.innerHTML=`<span class="pass-bubble">${name} · 不出</span>`;return}const combo=classify(cards);z.innerHTML=`<span class="play-label">${name} · ${typeName[combo.type]}</span><div class="played-cards">${sortHand([...cards]).map(playedCardHTML).join('')}</div>`;z.classList.remove('dealt');void z.offsetWidth;z.classList.add('dealt')
   }
-  function finish(winner){state.phase='over';const humanWin=winner===0||(state.landlord!==0&&winner!==state.landlord);const delta=state.multiplier*(state.landlord===0?2:1)*(humanWin?1:-1);$('#result-icon').textContent=humanWin?'胜':'负';$('#result-title').textContent=humanWin?'本局获胜':'再接再厉';$('#result-copy').textContent=humanWin?'配合漂亮，牌桌由你掌控。':'差一点就赢了，调整策略再来一局。';$('#result-score').textContent=(delta>0?'+':'')+delta;setActions('<button class="btn primary" id="start-btn">再来一局</button>');setHint('本局结束');render();setTimeout(()=>$('#result-dialog').showModal(),450)}
+  function finish(winner){state.phase='over';const humanWin=winner===0||(state.landlord!==0&&winner!==state.landlord);const delta=state.multiplier*(state.landlord===0?2:1)*(humanWin?1:-1);recordScore(delta);$('#result-icon').textContent=humanWin?'胜':'负';$('#result-title').textContent=humanWin?'本局获胜':'再接再厉';$('#result-copy').textContent=humanWin?'配合漂亮，牌桌由你掌控。':'差一点就赢了，调整策略再来一局。';$('#result-score').textContent=(delta>0?'+':'')+delta;setActions('<button class="btn primary" id="start-btn">再来一局</button>');setHint('本局结束');render();setTimeout(()=>$('#result-dialog').showModal(),450)}
 
   $('#music-btn').addEventListener('click',toggleMusic);updateMusicButton();window.addEventListener('resize',fitHand);
+  $('#landscape-btn').addEventListener('click',enterLandscape);$('#score-btn').addEventListener('click',()=>{$('#score-dialog').showModal();renderScoreHistory()});$('#score-dialog .close-btn').addEventListener('click',()=>$('#score-dialog').close());
   document.addEventListener('visibilitychange',()=>{if(document.hidden)stopMusic();else if(music.enabled)startMusic().catch(()=>{})});
   $('#rules-btn').addEventListener('click',()=>$('#rules-dialog').showModal());$('#rules-dialog .close-btn').addEventListener('click',()=>$('#rules-dialog').close());$('#again-btn').addEventListener('click',()=>{$('#result-dialog').close();startGame()});bindActions();
 
   function requireEmptyInput(input){if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).length)throw new Error('此操作不接受参数')}
   function registerWebMCP(){const ctx=document.modelContext;if(!ctx?.registerTool)return;try{ctx.registerTool({name:'start_doudizhu_game',title:'开始斗地主',description:'开始一局新的单机斗地主游戏。',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:false,untrustedContentHint:false},execute:async(input)=>{requireEmptyInput(input);await startGame();return {status:'bidding',handSize:state.players[0].length}}});ctx.registerTool({name:'get_doudizhu_state',title:'查看牌局状态',description:'读取当前斗地主牌局的阶段、轮次和手牌数量。',inputSchema:{type:'object',properties:{},additionalProperties:false},annotations:{readOnlyHint:true,untrustedContentHint:false},execute:(input)=>{requireEmptyInput(input);return {phase:state.phase,turn:state.turn,landlord:state.landlord,handSizes:state.players.map(x=>x.length),multiplier:state.multiplier}}})}catch(e){console.warn('WebMCP unavailable',e)}}
-  renderCounter();registerWebMCP();
+  renderCounter();renderScoreHistory();registerWebMCP();
 })();
