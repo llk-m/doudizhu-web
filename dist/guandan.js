@@ -4,12 +4,21 @@
   const $$ = (s) => [...document.querySelectorAll(s)];
   const SUITS = ["♠", "♥", "♣", "♦"];
   const RANKS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
-  const NAMES = ["你", "阿明", "小岚", "小雅"];
+  const NAMES = ["你", "阿明", "小舒", "小雅"];
   const LEVELS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
   const TYPE_NAME = {single:"单张",pair:"对子",triple:"三张",triple_pair:"三带二",straight:"顺子",pair_run:"三连对",triple_run:"钢板",bomb:"炸弹",straight_flush:"同花顺",joker_bomb:"四王炸"};
   const state = {hands:[[],[],[],[]], selected:new Set(), turn:0, last:null, passes:0, finished:[], played:[], running:false, timer:0, levels:[0,0], levelTeam:0, levelRank:"2", starter:0, lastRanking:null, tributeText:"", arrangeMode:"rank"};
   const saved = JSON.parse(localStorage.getItem("guandan-progress") || "null");
   if (saved && Array.isArray(saved.levels)) { state.levels = saved.levels.map(v => Math.max(0, Math.min(12, v|0))); state.levelTeam = saved.levelTeam === 1 ? 1 : 0; if(Array.isArray(saved.ranking)&&saved.ranking.length===4)state.lastRanking=saved.ranking; }
+
+  const music={enabled:localStorage.getItem("gd-music")==="on",ctx:null,timer:null,beat:0};
+  const MELODY=[0,3,7,10,7,3,5,7,12,10,7,5,3,0,3,5,7,5,3,-2];
+  function pluck(freq,when,duration=.24,volume=.025,type="triangle"){const osc=music.ctx.createOscillator(),gain=music.ctx.createGain();osc.type=type;osc.frequency.setValueAtTime(freq,when);gain.gain.setValueAtTime(.0001,when);gain.gain.exponentialRampToValueAtTime(volume,when+.012);gain.gain.exponentialRampToValueAtTime(.0001,when+duration);osc.connect(gain).connect(music.ctx.destination);osc.start(when);osc.stop(when+duration+.03);}
+  function musicTick(){if(!music.enabled||!music.ctx)return;const now=music.ctx.currentTime+.02,n=MELODY[music.beat%MELODY.length];pluck(220*Math.pow(2,n/12),now,.27,.026,"triangle");if(music.beat%4===0)pluck(110*Math.pow(2,[0,5,3,7][Math.floor(music.beat/4)%4]/12),now,.5,.018,"sine");if(music.beat%4===2)pluck(880,now,.05,.005,"square");music.beat++;}
+  function updateMusicButton(){const b=$("#gd-music");if(!b)return;b.classList.toggle("music-on",music.enabled);b.setAttribute("aria-pressed",String(music.enabled));b.setAttribute("aria-label",music.enabled?"关闭背景音乐":"开启背景音乐");b.title=music.enabled?"关闭背景音乐":"开启背景音乐";}
+  async function startMusic(){if(!music.ctx)music.ctx=new (window.AudioContext||window.webkitAudioContext)();await music.ctx.resume();clearInterval(music.timer);musicTick();music.timer=setInterval(musicTick,285);}
+  function stopMusic(){clearInterval(music.timer);music.timer=null;if(music.ctx?.state==="running")music.ctx.suspend();}
+  async function toggleMusic(){music.enabled=!music.enabled;localStorage.setItem("gd-music",music.enabled?"on":"off");updateMusicButton();if(music.enabled)await startMusic();else stopMusic();}
 
   function team(p){ return p % 2; }
   function partner(p){ return (p + 2) % 4; }
@@ -172,7 +181,7 @@
     const tribute=applyTribute();
     state.selected.clear(); state.last=null; state.passes=0; state.finished=[]; state.played=[]; state.running=true;
     if(!tribute)state.starter=(state.starter+1)%4; state.turn=state.starter;
-    updateAll(); setMessage(`${NAMES[state.turn]}先出牌`, tribute||`本局打 ${state.levelRank}`);
+    updateAll();const detected=findStraightFlushes(state.hands[0]).length;setMessage(`${NAMES[state.turn]}先出牌`, tribute||(detected?`识别到 ${detected} 组同花顺，点击“理牌 · 同花顺”整理`:`本局打 ${state.levelRank}`));if(music.enabled)startMusic().catch(()=>{});
     if(tribute){renderControls();highlightTurn();state.timer=setTimeout(runTurn,1400);}else runTurn();
   }
   function nextActive(from){ for(let n=1;n<=4;n++){const p=(from+n)%4;if(state.hands[p].length && !state.finished.includes(p))return p;}return -1; }
@@ -210,15 +219,22 @@
     const wild=c.rank===state.levelRank&&c.suit==="♥";
     return `<div class="gd-card${red?" red":""}${joker?" joker":""}" data-id="${c.id}"><span class="gd-rank">${label}</span><span class="gd-suit">${joker?"★":c.suit}</span><span class="gd-big-suit">${joker?"★":c.suit}</span>${wild?'<i class="gd-wild">配</i>':""}</div>`;
   }
+  function findStraightFlushes(hand){
+    const candidates=generateMoves(hand).filter(m=>m.combo.type==="straight_flush").sort((a,b)=>a.cards.filter(c=>c.rank===state.levelRank&&c.suit==="♥").length-b.cards.filter(c=>c.rank===state.levelRank&&c.suit==="♥").length||b.combo.main-a.combo.main),used=new Set(),result=[];
+    for(const move of candidates)if(move.cards.every(c=>!used.has(c.id))){result.push(move);move.cards.forEach(c=>used.add(c.id));}
+    return result;
+  }
   function arrangedGroups(){
-    const list=[...groups(state.hands[0]).entries()].map(([rank,cards])=>({rank,cards:[...cards].sort((a,b)=>SUITS.indexOf(a.suit)-SUITS.indexOf(b.suit))}));
-    if(state.arrangeMode==="smart")return list.sort((a,b)=>{const bucket=x=>x.cards.length>=4?0:x.cards.length===3?1:x.cards.length===2?2:3;return bucket(a)-bucket(b)||rankValue(a.rank)-rankValue(b.rank);});
-    return list.sort((a,b)=>rankValue(a.rank)-rankValue(b.rank));
+    const makeRanks=hand=>[...groups(hand).entries()].map(([rank,cards])=>({type:"rank",rank,cards:[...cards].sort((a,b)=>SUITS.indexOf(a.suit)-SUITS.indexOf(b.suit))}));
+    if(state.arrangeMode!=="smart")return makeRanks(state.hands[0]).sort((a,b)=>rankValue(a.rank)-rankValue(b.rank));
+    const flushes=findStraightFlushes(state.hands[0]),used=new Set(flushes.flatMap(m=>m.cards.map(c=>c.id))),rest=makeRanks(state.hands[0].filter(c=>!used.has(c.id))).sort((a,b)=>{const bucket=x=>x.cards.length>=4?0:x.cards.length===3?1:x.cards.length===2?2:3;return bucket(a)-bucket(b)||rankValue(a.rank)-rankValue(b.rank);});
+    return [...flushes.map(m=>({type:"combo",label:"同花顺",cards:m.cards,combo:m.combo})),...rest];
   }
   function renderHand(){
-    const el=$("#gd-hand"),list=arrangedGroups(),vGap=innerHeight<=600&&innerWidth>innerHeight?3:innerWidth<=760?7:10;el.innerHTML=list.map(g=>`<div class="gd-rank-stack" data-rank="${g.rank}" style="--v-gap:${vGap}px;--stack-extra:${(g.cards.length-1)*vGap}px">${g.cards.map((c,i)=>cardHTML(c).replace('data-id=',`style="--i:${i};--stack-top:${i*vGap}px" data-id=`)).join("")}</div>`).join("");
-    const stacks=$$("#gd-hand .gd-rank-stack"),available=Math.max(120,el.clientWidth-24),w=57,over=stacks.length>1?Math.min(0,(available-w*stacks.length)/(stacks.length-1)):0;stacks.forEach((node,i)=>{node.style.setProperty("--stack-overlap",`${Math.max(-39,over)}px`);node.style.zIndex=i+1;});
-    $$("#gd-hand .gd-card").forEach(node=>node.classList.toggle("selected",state.selected.has(+node.dataset.id)));
+    const el=$("#gd-hand"),list=arrangedGroups(),landscape=innerHeight<=600&&innerWidth>innerHeight,mobile=innerWidth<=760,vGap=landscape?13:mobile?14:16,cardW=landscape?51:mobile?57:64,comboStep=landscape?12:mobile?14:16;
+    el.innerHTML=list.map(g=>{const ids=g.cards.map(c=>c.id).join(",");if(g.type==="combo"){const normal=g.cards.filter(c=>!(c.rank===state.levelRank&&c.suit==="♥")),suit=normal[0]?.suit||"♥",width=cardW+(g.cards.length-1)*comboStep;return `<div class="gd-hand-block gd-combo-block" data-width="${width}" style="width:${width}px;flex-basis:${width}px"><button class="gd-group-pick combo" data-ids="${ids}">${suit} 同花顺 · 全选</button>${g.cards.map((c,i)=>cardHTML(c).replace('data-id=',`style="--combo-left:${i*comboStep}px;--i:${i}" data-id=`)).join("")}</div>`;}return `<div class="gd-hand-block gd-rank-stack" data-width="${cardW}" data-rank="${g.rank}" style="--v-gap:${vGap}px;--stack-extra:${(g.cards.length-1)*vGap}px;width:${cardW}px;flex-basis:${cardW}px">${g.cards.map((c,i)=>cardHTML(c).replace('data-id=',`style="--i:${i};--stack-top:${i*vGap}px" data-id=`)).join("")}${g.cards.length>1?`<button class="gd-group-pick" data-ids="${ids}">全选 ×${g.cards.length}</button>`:""}</div>`;}).join("");
+    const blocks=$$("#gd-hand .gd-hand-block"),available=Math.max(120,el.clientWidth-24),total=blocks.reduce((n,b)=>n+(+b.dataset.width||cardW),0),over=blocks.length>1?Math.min(0,(available-total)/(blocks.length-1)):0;blocks.forEach((node,i)=>{node.style.setProperty("--stack-overlap",`${Math.max(-28,over)}px`);node.style.zIndex=i+1;});
+    const candidateIds=new Set(findStraightFlushes(state.hands[0]).flatMap(m=>m.cards.map(c=>c.id)));$$("#gd-hand .gd-card").forEach(node=>{const id=+node.dataset.id;node.classList.toggle("selected",state.selected.has(id));node.classList.toggle("combo-candidate",state.arrangeMode==="rank"&&candidateIds.has(id));});
   }
   function renderBacks(){for(let p=1;p<4;p++){const shown=state.running?state.hands[p].length:27,n=Math.min(7,Math.ceil(shown/4));$(`#gd-backs-${p}`).innerHTML=Array.from({length:n},()=>'<i class="gd-back"></i>').join("");$(`#gd-count-${p}`).textContent=shown;}}
   function renderCounter(){const all=state.hands.flat(),order=["BJ","SJ",state.levelRank,...RANKS.slice().reverse().filter(r=>r!==state.levelRank)];const count=(r,s)=>state.running?all.filter(c=>c.rank===r&&(!s||c.suit===s)).length:(r==="SJ"||r==="BJ"?2:s?2:8);$("#gd-counter-grid").innerHTML=order.map(r=>{const n=count(r),label=r==="BJ"?"大王":r==="SJ"?"小王":r;if(r==="SJ"||r==="BJ")return `<div class="gd-counter-cell joker-count${n?"":" zero"}"><b>${label}</b><strong>${n}</strong></div>`;return `<div class="gd-counter-cell${n?"":" zero"}"><b>${label}</b><div class="gd-suit-counts">${SUITS.map(s=>`<span class="${s==="♥"||s==="♦"?"red":""}">${s}${count(r,s)}</span>`).join("")}</div></div>`;}).join("");}
@@ -229,20 +245,22 @@
   function setMessage(status,msg){$("#gd-status").textContent=status;$("#gd-message").textContent=msg;$("#gd-hint").textContent=msg;}
   function highlightTurn(){$$(".gd-player,.gd-me").forEach(x=>x.classList.remove("turn"));const el=$(`#gd-player-${state.turn}`);if(el)el.classList.add("turn");}
   function renderControls(){
-    const el=$("#gd-actions");if(!state.running){el.innerHTML='<button class="gd-btn primary" id="gd-start">开始游戏</button>';$("#gd-start").onclick=startGame;return;}
-    if(state.turn!==0){el.innerHTML='<button class="gd-btn arrange" id="gd-arrange-btn">理牌</button><button class="gd-btn" disabled>电脑思考中</button>';$("#gd-arrange-btn").onclick=arrangeHand;return;}
-    el.innerHTML=`<button class="gd-btn arrange" id="gd-arrange-btn">理牌</button><button class="gd-btn" id="gd-hint-btn">提示</button>${state.last?'<button class="gd-btn" id="gd-pass-btn">不出</button>':""}<button class="gd-btn primary" id="gd-play-btn">出牌</button>`;
+    const el=$("#gd-actions");if(!state.running){el.innerHTML='<button class="gd-btn primary" id="gd-start">开始游戏</button>';$("#gd-start").onclick=startGame;return;}const flushCount=findStraightFlushes(state.hands[0]).length,arrangeLabel=state.arrangeMode==="smart"?"恢复点数":flushCount?`理牌 · 同花顺${flushCount}`:"理牌";
+    if(state.turn!==0){el.innerHTML=`<button class="gd-btn arrange${flushCount?" detected":""}" id="gd-arrange-btn">${arrangeLabel}</button><button class="gd-btn" disabled>电脑思考中</button>`;$("#gd-arrange-btn").onclick=arrangeHand;return;}
+    el.innerHTML=`<button class="gd-btn arrange${flushCount?" detected":""}" id="gd-arrange-btn">${arrangeLabel}</button><button class="gd-btn" id="gd-hint-btn">提示</button>${state.last?'<button class="gd-btn" id="gd-pass-btn">不出</button>':""}<button class="gd-btn primary" id="gd-play-btn">出牌</button>`;
     $("#gd-arrange-btn").onclick=arrangeHand;$("#gd-hint-btn").onclick=hintMove;if($("#gd-pass-btn"))$("#gd-pass-btn").onclick=()=>pass(0);$("#gd-play-btn").onclick=humanPlay;
   }
-  function arrangeHand(){state.arrangeMode=state.arrangeMode==="rank"?"smart":"rank";renderHand();setMessage(state.arrangeMode==="smart"?"智能理牌":"点数理牌",state.arrangeMode==="smart"?"炸弹、三张、对子已分组":"已按牌点从小到大排列");}
+  function arrangeHand(){state.arrangeMode=state.arrangeMode==="rank"?"smart":"rank";const n=findStraightFlushes(state.hands[0]).length;renderHand();renderControls();setMessage(state.arrangeMode==="smart"?"智能理牌":"点数理牌",state.arrangeMode==="smart"?(n?`已整理 ${n} 组同花顺，点击组名可整组选中`:"炸弹、三张、对子已分组"):"已按牌点从小到大排列");}
   function describeSelection(){if(!state.selected.size)return;const cards=state.hands[0].filter(c=>state.selected.has(c.id)),combo=classify(cards);if(!combo){$("#gd-hint").textContent=`已选 ${cards.length} 张`;return;}let extra="";if(combo.type==="straight_flush"){const normal=cards.filter(c=>!(c.rank===state.levelRank&&c.suit==="♥"));extra=` · ${(normal[0]?.suit)||"♥"}`;}$("#gd-hint").textContent=`已识别：${TYPE_NAME[combo.type]}${extra}`;}
   function hintMove(){const ms=generateMoves(state.hands[0],state.last);state.selected.clear();if(ms.length){const m=ms.sort((a,b)=>moveCost(a,state.hands[0],state.last)-moveCost(b,state.hands[0],state.last))[0];m.cards.forEach(c=>state.selected.add(c.id));setMessage("出牌提示",TYPE_NAME[m.combo.type]);}else setMessage("没有能压过的牌","请选择不出");renderHand();}
   function humanPlay(){const cards=state.hands[0].filter(c=>state.selected.has(c.id)),combo=classify(cards);if(!combo){setMessage("牌型不正确","请重新选择");return;}if(state.last&&!beats(combo,state.last.combo)){setMessage("压不过上一手","需要同型更大或使用炸弹");return;}playMove(0,cards);}
   let drag=false,dragSelect=true,dragSeen=new Set();
   function touchCard(node){if(!node||!node.classList.contains("gd-card")||!node.closest("#gd-hand"))return;const id=+node.dataset.id;if(dragSeen.has(id))return;dragSeen.add(id);dragSelect?state.selected.add(id):state.selected.delete(id);node.classList.toggle("selected",dragSelect);}
-  $("#gd-hand").addEventListener("pointerdown",e=>{const c=e.target.closest(".gd-card");if(!c||state.turn!==0)return;drag=true;dragSeen.clear();dragSelect=!state.selected.has(+c.dataset.id);touchCard(c);});
+  function pickGroup(button){const ids=button.dataset.ids.split(",").map(Number),all=ids.every(id=>state.selected.has(id));ids.forEach(id=>all?state.selected.delete(id):state.selected.add(id));renderHand();describeSelection();}
+  $("#gd-hand").addEventListener("pointerdown",e=>{const pick=e.target.closest(".gd-group-pick");if(pick&&state.turn===0){e.preventDefault();pickGroup(pick);return;}const c=e.target.closest(".gd-card");if(!c||state.turn!==0)return;drag=true;dragSeen.clear();dragSelect=!state.selected.has(+c.dataset.id);touchCard(c);});
   window.addEventListener("pointermove",e=>{if(!drag)return;touchCard(document.elementFromPoint(e.clientX,e.clientY)?.closest?.(".gd-card"));});window.addEventListener("pointerup",()=>{if(drag)describeSelection();drag=false;dragSeen.clear();});
   $("#gd-rules").onclick=()=>$("#gd-rules-dialog").showModal();$("#gd-rules-dialog .gd-close").onclick=()=>$("#gd-rules-dialog").close();$("#gd-again").onclick=()=>{$("#gd-result-dialog").close();startGame();};
+  $("#gd-music").onclick=toggleMusic;updateMusicButton();document.addEventListener("visibilitychange",()=>{if(document.hidden)stopMusic();else if(music.enabled)startMusic().catch(()=>{});});
   $("#gd-landscape").onclick=async()=>{try{if(document.documentElement.requestFullscreen&&!document.fullscreenElement)await document.documentElement.requestFullscreen();if(screen.orientation?.lock)await screen.orientation.lock("landscape");}catch(e){setMessage("请旋转手机","浏览器不允许网页强制旋转时，请开启系统自动旋转");}};
   window.addEventListener("resize",()=>state.running&&renderHand());
   state.levelRank=LEVELS[state.levels[state.levelTeam]];updateAll();renderControls();
