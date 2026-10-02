@@ -7,7 +7,7 @@
   const NAMES = ["你", "阿明", "小舒", "小雅"];
   const LEVELS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
   const TYPE_NAME = {single:"单张",pair:"对子",triple:"三张",triple_pair:"三带二",straight:"顺子",pair_run:"三连对",triple_run:"钢板",bomb:"炸弹",straight_flush:"同花顺",joker_bomb:"四王炸"};
-  const state = {hands:[[],[],[],[]], selected:new Set(), turn:0, last:null, passes:0, finished:[], played:[], running:false, timer:0, levels:[0,0], levelTeam:0, levelRank:"2", starter:0, lastRanking:null, tributeText:"", manualGroups:[], flushCycle:{"♠":0,"♥":0,"♣":0,"♦":0}};
+  const state = {hands:[[],[],[],[]], selected:new Set(), turn:0, last:null, passes:0, finished:[], played:[], passSignals:[[],[],[],[]], running:false, timer:0, levels:[0,0], levelTeam:0, levelRank:"2", starter:0, lastRanking:null, tributeText:"", manualGroups:[], flushCycle:{"♠":0,"♥":0,"♣":0,"♦":0}};
   const saved = JSON.parse(localStorage.getItem("guandan-progress") || "null");
   if (saved && Array.isArray(saved.levels)) { state.levels = saved.levels.map(v => Math.max(0, Math.min(12, v|0))); state.levelTeam = saved.levelTeam === 1 ? 1 : 0; if(Array.isArray(saved.ranking)&&saved.ranking.length===4)state.lastRanking=saved.ranking; }
 
@@ -124,39 +124,46 @@
     const valid=uniqueMoves(moves).map(cards=>({cards,combo:classify(cards)})).filter(x=>x.combo);
     return target ? valid.filter(x=>beats(x.combo,target.combo)) : valid;
   }
-  function moveCost(move,hand,target){
-    const c=move.combo; let score=0;
-    score -= move.cards.length*13;
-    score += (c.main||c.value)*.65;
-    if(c.bomb)score += target&&target.combo.bomb ? 8 : 70;
-    score += move.cards.filter(x=>rankValue(x.rank)>=15).length*9;
-    score += move.cards.filter(x=>x.rank===state.levelRank&&x.suit==="♥").length*17;
-    const handGroups=groups(hand);for(const [rank,cards] of handGroups)if(cards.length>=4){const used=move.cards.filter(ca=>ca.rank===rank).length;if(used>0&&used<cards.length)score+=48;}
-    if(move.cards.length===hand.length)score-=1000;
-    const remain=hand.filter(ca=>!move.cards.some(m=>m.id===ca.id));
-    score += estimateTurns(remain)*16;
+  function removeMove(hand,move){const ids=new Set(move.cards.map(c=>c.id));return hand.filter(c=>!ids.has(c.id));}
+  function moveShape(move){const bonus={straight:25,pair_run:31,triple_run:34,triple_pair:23,triple:8,pair:5,single:0,bomb:18,straight_flush:30,joker_bomb:35};return move.cards.length*18+(bonus[move.combo.type]||0)-move.cards.filter(c=>c.rank===state.levelRank&&c.suit==="♥").length*13;}
+  function quickTurns(hand){
+    if(!hand.length)return 0;const count=new Map([...groups(hand)].map(([r,c])=>[r,c.length]));let turns=0;
+    if((count.get("SJ")||0)+(count.get("BJ")||0)===4){turns++;count.set("SJ",0);count.set("BJ",0);}for(const [rank,n] of count)if(n>=4){turns++;count.set(rank,0);}
+    const takeRuns=(need,length)=>{let found=true;while(found){found=false;const vals=RANKS.map(naturalValue);for(let i=0;i<=vals.length-length;i++){const run=vals.slice(i,i+length),ranks=run.map(v=>RANKS.find(r=>naturalValue(r)===v));if(ranks.every(r=>(count.get(r)||0)===need)){ranks.forEach(r=>count.set(r,0));turns++;found=true;break;}}}};
+    takeRuns(3,2);takeRuns(2,3);takeRuns(1,5);const triples=[...count].filter(([,n])=>n===3).map(([r])=>r),pairs=[...count].filter(([,n])=>n===2).map(([r])=>r);while(triples.length&&pairs.length){count.set(triples.pop(),0);count.set(pairs.pop(),0);turns++;}for(const n of count.values())if(n>0)turns++;return turns;
+  }
+  function planTurns(hand,memo=new Map(),depth=0){
+    if(!hand.length)return 0;const key=`${depth}|${hand.map(c=>c.id).sort((a,b)=>a-b).join(".")}`;if(memo.has(key))return memo.get(key);if(depth>=2||hand.length>10){const q=quickTurns(hand);memo.set(key,q);return q;}const moves=generateMoves(hand);if(moves.some(m=>m.cards.length===hand.length)){memo.set(key,1);return 1;}
+    const candidates=moves.sort((a,b)=>moveShape(b)-moveShape(a)).slice(0,hand.length<=7?20:12);let best=99;for(const move of candidates)best=Math.min(best,1+planTurns(removeMove(hand,move),memo,depth+1));memo.set(key,best);return best;
+  }
+  function structureDamage(move,hand){
+    let cost=0;const handGroups=groups(hand);for(const [rank,cards] of handGroups){const used=move.cards.filter(c=>c.rank===rank).length;if(!used||used===cards.length)continue;if(cards.length>=4)cost+=62;else if(cards.length===3)cost+=16;else if(cards.length===2)cost+=9;}
+    cost+=move.cards.filter(c=>c.rank===state.levelRank&&c.suit==="♥").length*20;return cost;
+  }
+  function unseenRankCount(rank,p){const total=rank==="SJ"||rank==="BJ"?2:8,played=state.played.filter(c=>c.rank===rank).length,own=state.hands[p].filter(c=>c.rank===rank).length;return Math.max(0,total-played-own);}
+  function likelyControl(move,p){
+    const c=move.combo;if(c.type==="joker_bomb")return true;if(c.bomb)return false;const need=c.type==="pair"?2:c.type==="triple"||c.type==="triple_pair"?3:c.type==="single"?1:0;if(!need)return false;
+    const allRanks=[...RANKS,"SJ","BJ"].filter(r=>rankValue(r)>(c.main||c.value));if(allRanks.some(r=>unseenRankCount(r,p)>=need))return false;
+    const opponents=[0,1,2,3].filter(x=>team(x)!==team(p)&&state.hands[x].length);return opponents.every(x=>state.passSignals[x].some(s=>s.type===c.type&&s.size===c.size&&s.value<=c.value))||allRanks.every(r=>unseenRankCount(r,p)<need);
+  }
+  function moveCost(move,hand,target,p=0,context={}){
+    const c=move.combo,remain=removeMove(hand,move),memo=context.memo||new Map();if(!remain.length)return-100000;const turns=planTurns(remain,memo);let score=turns*(hand.length<=10?48:31)-move.cards.length*4;
+    score+=(c.main||c.value)*(target?0.8:0.35)+structureDamage(move,hand);score+=move.cards.filter(x=>rankValue(x.rank)>=15).length*(target?6:10);
+    if(c.bomb)score+=context.danger?12:context.closesSoon?-18:86;const controls=likelyControl(move,p);if(controls)score-=context.danger?38:19;if(turns<=1&&controls)score-=55;
+    if(!target&&c.type==="single"&&context.enemyOne)score+=likelyControl(move,p)?10:160;if(!target&&c.type==="pair"&&context.enemyTwo)score+=95;
     return score;
   }
-  function estimateTurns(hand){
-    if(!hand.length)return 0; let left=[...hand],turns=0;
-    while(left.length&&turns<12){const ms=generateMoves(left).filter(x=>!x.combo.bomb);const best=ms.sort((a,b)=>b.cards.length-a.cards.length)[0]||{cards:[left[0]]};const ids=new Set(best.cards.map(c=>c.id));left=left.filter(c=>!ids.has(c.id));turns++;}
-    return turns+Math.ceil(left.length/2);
-  }
   function chooseAI(p){
-    const hand=state.hands[p], target=state.last, moves=generateMoves(hand,target);
-    if(!moves.length)return null;
-    if(target && team(target.player)===team(p)){
-      const finish=moves.find(m=>m.cards.length===hand.length);
-      if(finish)return finish;
+    const hand=state.hands[p],target=state.last,moves=generateMoves(hand,target);if(!moves.length)return null;const finish=moves.find(m=>m.cards.length===hand.length);if(finish)return finish;
+    const activeEnemies=[0,1,2,3].filter(x=>team(x)!==team(p)&&state.hands[x].length),enemyMin=Math.min(...activeEnemies.map(x=>state.hands[x].length)),next=nextActive(p),nextIsEnemy=next>=0&&team(next)!==team(p),enemyOne=nextIsEnemy&&state.hands[next].length===1,enemyTwo=nextIsEnemy&&state.hands[next].length===2;
+    if(target&&team(target.player)===team(p)){
+      if(enemyMin<=2&&nextIsEnemy){const block=moves.filter(m=>!m.combo.bomb&&likelyControl(m,p)).sort((a,b)=>(a.combo.main||a.combo.value)-(b.combo.main||b.combo.value))[0];if(block)return block;}
       return null;
     }
-    if(!target&&state.hands[partner(p)].length<=2){const need=state.hands[partner(p)].length;const feed=moves.filter(m=>m.cards.length===need&&!m.combo.bomb).sort((a,b)=>(a.combo.main||a.combo.value)-(b.combo.main||b.combo.value))[0];if(feed)return feed;}
-    const enemyCounts=[0,1,2,3].filter(x=>team(x)!==team(p)&&state.hands[x].length).map(x=>state.hands[x].length);
-    const danger=target&&team(target.player)!==team(p)&&(state.hands[target.player].length<=4||Math.min(...enemyCounts)<=2);
-    let pool=moves;
-    if(!danger){const nonBomb=pool.filter(m=>!m.combo.bomb);if(nonBomb.length)pool=nonBomb;}
-    if(danger&&target){const finish=pool.find(m=>m.cards.length===hand.length);if(finish)return finish;}
-    return pool.sort((a,b)=>moveCost(a,hand,target)-moveCost(b,hand,target))[0];
+    if(!target&&state.hands[partner(p)].length<=2){const need=state.hands[partner(p)].length,feed=moves.filter(m=>m.cards.length===need&&!m.combo.bomb).sort((a,b)=>(a.combo.main||a.combo.value)-(b.combo.main||b.combo.value))[0];if(feed)return feed;}
+    let pool=[...moves];if(!target&&enemyOne){const safe=pool.filter(m=>m.combo.type!=="single");if(safe.length)pool=safe;}if(!target&&enemyTwo){const safe=pool.filter(m=>m.combo.type!=="pair");if(safe.length)pool=safe;}
+    const danger=enemyMin<=3||(target&&team(target.player)!==team(p)&&state.hands[target.player].length<=5),memo=new Map();if(!danger){const nonBomb=pool.filter(m=>!m.combo.bomb);if(nonBomb.length)pool=nonBomb;}
+    const scored=pool.map(move=>{const remain=removeMove(hand,move),closesSoon=planTurns(remain,memo)<=1;return{move,cost:moveCost(move,hand,target,p,{danger,closesSoon,enemyOne,enemyTwo,memo})};});scored.sort((a,b)=>a.cost-b.cost);return scored[0].move;
   }
 
   function applyTribute(){
@@ -179,7 +186,7 @@
     clearTimeout(state.timer); state.levelRank=LEVELS[state.levels[state.levelTeam]]; const deck=makeDeck();
     state.hands=[[],[],[],[]]; for(let i=0;i<108;i++)state.hands[i%4].push(deck[i]); state.hands.forEach(sortHand);
     const tribute=applyTribute();
-    state.selected.clear(); state.manualGroups=[];state.flushCycle={"♠":0,"♥":0,"♣":0,"♦":0};state.last=null; state.passes=0; state.finished=[]; state.played=[]; state.running=true;const myMeta=$("#gd-player-0 .gd-me-meta small");if(myMeta)myMeta.textContent="与小舒一队";
+    state.selected.clear(); state.manualGroups=[];state.flushCycle={"♠":0,"♥":0,"♣":0,"♦":0};state.last=null; state.passes=0; state.finished=[]; state.played=[];state.passSignals=[[],[],[],[]]; state.running=true;const myMeta=$("#gd-player-0 .gd-me-meta small");if(myMeta)myMeta.textContent="与小舒一队";
     if(!tribute)state.starter=(state.starter+1)%4; state.turn=state.starter;
     updateAll();const detected=SUITS.filter(s=>straightFlushOptions(state.hands[0],s).length).length;setMessage(`${NAMES[state.turn]}先出牌`, tribute||(detected?`有 ${detected} 种花色可组成同花顺，点击亮起的花色预选`:`本局打 ${state.levelRank}`));if(music.enabled)startMusic().catch(()=>{});
     if(tribute){renderControls();highlightTurn();state.timer=setTimeout(runTurn,1400);}else runTurn();
@@ -189,11 +196,11 @@
     const combo=classify(cards); if(!combo || (state.last&&!beats(combo,state.last.combo)))return false;
     const ids=new Set(cards.map(c=>c.id)); state.hands[p]=state.hands[p].filter(c=>!ids.has(c.id)); state.last={player:p,cards:[...cards],combo}; state.passes=0; state.played.push(...cards); if(p===0)state.selected.clear();
     showPlay(p,cards,TYPE_NAME[combo.type]);
-    let justFinished=false;if(!state.hands[p].length && !state.finished.includes(p)){justFinished=true;state.finished.push(p); markFinished(p); if(state.finished.length===3){const last=[0,1,2,3].find(x=>!state.finished.includes(x));state.finished.push(last);finishGame();return true;} }
+    let justFinished=false;if(!state.hands[p].length && !state.finished.includes(p)){justFinished=true;state.finished.push(p); markFinished(p);if(state.finished.length===2&&team(state.finished[0])===team(state.finished[1])){const rest=[0,1,2,3].filter(x=>!state.finished.includes(x)).sort((a,b)=>state.hands[a].length-state.hands[b].length);state.finished.push(...rest);finishGame();return true;}if(state.finished.length===3){const last=[0,1,2,3].find(x=>!state.finished.includes(x));state.finished.push(last);finishGame();return true;} }
     state.turn=nextActive(p); updateAll();if(p===0&&justFinished)setMessage(`你已出完 · 第 ${state.finished.indexOf(0)+1} 名`,`牌局继续，已公开对家小舒的剩余手牌`);else setMessage(`${NAMES[p]}：${TYPE_NAME[combo.type]}`, `${NAMES[state.turn]}出牌`); runTurn(); return true;
   }
   function pass(p){
-    if(!state.last)return; state.passes++; showPass(p); const active=4-state.finished.length;
+    if(!state.last)return;state.passSignals[p].push({type:state.last.combo.type,size:state.last.combo.size,value:state.last.combo.value});if(state.passSignals[p].length>12)state.passSignals[p].shift(); state.passes++; showPass(p); const active=4-state.finished.length;
     const requiredPasses=active-(state.hands[state.last.player].length?1:0);
     if(state.passes>=Math.max(1,requiredPasses)){
       const winner=state.last.player; state.last=null;state.passes=0;
@@ -212,7 +219,7 @@
   function finishGame(){
     state.running=false;clearTimeout(state.timer);const first=state.finished[0],matePos=state.finished.indexOf(partner(first));const gain=matePos===1?3:matePos===2?2:1;const winTeam=team(first);state.levels[winTeam]=Math.min(12,state.levels[winTeam]+gain);state.levelTeam=winTeam;
     state.lastRanking=[...state.finished];localStorage.setItem("guandan-progress",JSON.stringify({levels:state.levels,levelTeam:state.levelTeam,ranking:state.lastRanking}));
-    updateHeader();const won=winTeam===0;$("#gd-result-icon").textContent=won?"胜":"负";$("#gd-result-icon").classList.toggle("lose",!won);$("#gd-result-title").textContent=won?`我方升 ${gain} 级`:`对方升 ${gain} 级`;$("#gd-result-copy").textContent=`下局由${winTeam===0?"我方":"对方"}打 ${LEVELS[state.levels[winTeam]]}`;
+    updateHeader();const won=winTeam===0,doubleDown=matePos===1;$("#gd-result-icon").textContent=won?"胜":"负";$("#gd-result-icon").classList.toggle("lose",!won);$("#gd-result-title").textContent=doubleDown?`${won?"我方":"对方"}双下 · 升 3 级`:(won?`我方升 ${gain} 级`:`对方升 ${gain} 级`);$("#gd-result-copy").textContent=`下局由${winTeam===0?"我方":"对方"}打 ${LEVELS[state.levels[winTeam]]}`;
     $("#gd-ranking").innerHTML=state.finished.map((p,i)=>`<div class="gd-rank-item"><b>${i+1}</b>${NAMES[p]}${team(p)===0?" · 我方":""}</div>`).join("");setTimeout(()=>$("#gd-result-dialog").showModal(),350);renderControls();
   }
   function markFinished(p){const el=$(`#gd-player-${p}`);if(!el)return;const label=p===0?el.querySelector(".gd-me-meta small"):el.querySelector(".gd-meta em");if(label)label.textContent=`第 ${state.finished.length} 名 · 观战中`;}
@@ -231,7 +238,7 @@
   }
   function renderHand(){
     const el=$("#gd-hand"),list=arrangedGroups(),landscape=innerHeight<=600&&innerWidth>innerHeight,mobile=innerWidth<=760,vGap=landscape?24:mobile?25:28,cardW=landscape?51:mobile?57:64,comboStep=landscape?28:mobile?30:34;
-    el.innerHTML=list.map(g=>{const ids=g.cards.map(c=>c.id).join(",");if(g.type==="combo"){const width=cardW+(g.cards.length-1)*comboStep;return `<div class="gd-hand-block gd-combo-block manual" data-width="${width}" style="width:${width}px;flex-basis:${width}px"><button class="gd-group-pick combo" data-ids="${ids}">${g.label} · 全选</button><button class="gd-group-remove" data-group="${g.groupIndex}" title="拆开这组">×</button>${g.cards.map((c,i)=>cardHTML(c).replace('data-id=',`style="--combo-left:${i*comboStep}px;--i:${i}" data-id=`)).join("")}</div>`;}return `<div class="gd-hand-block gd-rank-stack" data-width="${cardW}" data-rank="${g.rank}" style="--v-gap:${vGap}px;--stack-extra:${(g.cards.length-1)*vGap}px;width:${cardW}px;flex-basis:${cardW}px">${g.cards.map((c,i)=>cardHTML(c).replace('data-id=',`style="--i:${i};--stack-top:${i*vGap}px" data-id=`)).join("")}</div>`;}).join("");
+    el.innerHTML=list.map(g=>{const ids=g.cards.map(c=>c.id).join(",");if(g.type==="combo"){const width=cardW+(g.cards.length-1)*comboStep;return `<div class="gd-hand-block gd-combo-block manual" data-width="${width}" style="width:${width}px;flex-basis:${width}px"><button class="gd-group-pick combo" data-ids="${ids}">${g.label} · 全选</button><button class="gd-group-remove" data-group="${g.groupIndex}" title="拆开这组">×</button>${g.cards.map((c,i)=>cardHTML(c).replace('data-id=',`style="--combo-left:${i*comboStep}px;--i:${i}" data-id=`)).join("")}</div>`;}return `<div class="gd-hand-block gd-rank-stack" data-width="${cardW}" data-rank="${g.rank}" style="--v-gap:${vGap}px;--stack-extra:${(g.cards.length-1)*vGap}px;width:${cardW}px;flex-basis:${cardW}px">${g.cards.length>1?`<button class="gd-group-pick rank" data-ids="${ids}" title="全选所有 ${g.rank}">${g.rank} · 全选</button>`:""}${g.cards.map((c,i)=>cardHTML(c).replace('data-id=',`style="--i:${i};--stack-top:${i*vGap}px" data-id=`)).join("")}</div>`;}).join("");
     const blocks=$$("#gd-hand .gd-hand-block"),available=Math.max(120,el.clientWidth-24),total=blocks.reduce((n,b)=>n+(+b.dataset.width||cardW),0),over=blocks.length>1?Math.min(0,(available-total)/(blocks.length-1)):0;blocks.forEach((node,i)=>{node.style.setProperty("--stack-overlap",`${Math.max(-28,over)}px`);node.style.zIndex=i+1;});
     $$("#gd-hand .gd-card").forEach(node=>node.classList.toggle("selected",state.selected.has(+node.dataset.id)));
   }
@@ -254,7 +261,7 @@
   function selectStraightFlush(suit){const options=straightFlushOptions(state.hands[0],suit);if(!options.length)return;const index=state.flushCycle[suit]%options.length,move=options[index];state.flushCycle[suit]=(index+1)%options.length;state.selected.clear();move.cards.forEach(c=>state.selected.add(c.id));renderHand();renderControls();$("#gd-hint").textContent=`已预选 ${suit} 同花顺 ${index+1}/${options.length}${options.length>1?"，再点切换下一组":""}`;}
   function arrangeHand(){const ids=[...state.selected];if(ids.length<2){$("#gd-hint").textContent="请先选择至少 2 张牌，再点“收为一组”";return;}state.manualGroups=state.manualGroups.map(g=>g.filter(id=>!state.selected.has(id))).filter(g=>g.length>1);state.manualGroups.push(ids);state.selected.clear();renderHand();renderControls();$("#gd-hint").textContent=`已把 ${ids.length} 张牌收为牌组 ${state.manualGroups.length}`;}
   function describeSelection(){if(!state.selected.size)return;const cards=state.hands[0].filter(c=>state.selected.has(c.id)),combo=classify(cards);if(!combo){$("#gd-hint").textContent=`已选 ${cards.length} 张`;return;}let extra="";if(combo.type==="straight_flush"){const normal=cards.filter(c=>!(c.rank===state.levelRank&&c.suit==="♥"));extra=` · ${(normal[0]?.suit)||"♥"}`;}$("#gd-hint").textContent=`已识别：${TYPE_NAME[combo.type]}${extra}`;}
-  function hintMove(){const ms=generateMoves(state.hands[0],state.last);state.selected.clear();if(ms.length){const m=ms.sort((a,b)=>moveCost(a,state.hands[0],state.last)-moveCost(b,state.hands[0],state.last))[0];m.cards.forEach(c=>state.selected.add(c.id));setMessage("出牌提示",TYPE_NAME[m.combo.type]);}else setMessage("没有能压过的牌","请选择不出");renderHand();}
+  function hintMove(){const ms=generateMoves(state.hands[0],state.last);state.selected.clear();if(ms.length){const memo=new Map(),enemyMin=Math.min(...[1,3].filter(x=>state.hands[x].length).map(x=>state.hands[x].length)),danger=enemyMin<=3;const scored=ms.map(move=>({move,cost:moveCost(move,state.hands[0],state.last,0,{memo,danger,closesSoon:planTurns(removeMove(state.hands[0],move),memo)<=1})}));scored.sort((a,b)=>a.cost-b.cost);const m=scored[0].move;m.cards.forEach(c=>state.selected.add(c.id));setMessage("出牌提示",TYPE_NAME[m.combo.type]);}else setMessage("没有能压过的牌","请选择不出");renderHand();}
   function humanPlay(){const cards=state.hands[0].filter(c=>state.selected.has(c.id)),combo=classify(cards);if(!combo){setMessage("牌型不正确","请重新选择");return;}if(state.last&&!beats(combo,state.last.combo)){setMessage("压不过上一手","需要同型更大或使用炸弹");return;}playMove(0,cards);}
   let drag=false,dragSelect=true,dragSeen=new Set();
   function touchCard(node){if(!node||!node.classList.contains("gd-card")||!node.closest("#gd-hand"))return;const id=+node.dataset.id;if(dragSeen.has(id))return;dragSeen.add(id);dragSelect?state.selected.add(id):state.selected.delete(id);node.classList.toggle("selected",dragSelect);}
