@@ -7,7 +7,7 @@
   const NAMES = ["你", "阿明", "小舒", "小雅"];
   const LEVELS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
   const TYPE_NAME = {single:"单张",pair:"对子",triple:"三张",triple_pair:"三带二",straight:"顺子",pair_run:"三连对",triple_run:"钢板",bomb:"炸弹",straight_flush:"同花顺",joker_bomb:"四王炸"};
-  const state = {hands:[[],[],[],[]], selected:new Set(), turn:0, last:null, passes:0, finished:[], played:[], passSignals:[[],[],[],[]], running:false, timer:0, levels:[0,0], levelTeam:0, levelRank:"2", starter:0, lastRanking:null, tributeText:"", manualGroups:[], flushCycle:{"♠":0,"♥":0,"♣":0,"♦":0}};
+  const state = {hands:[[],[],[],[]], selected:new Set(), turn:0, last:null, passes:0, finished:[], played:[], playHistory:[], passSignals:[[],[],[],[]], tributeSession:null, running:false, timer:0, levels:[0,0], levelTeam:0, levelRank:"2", starter:0, lastRanking:null, tributeText:"", manualGroups:[], flushCycle:{"♠":0,"♥":0,"♣":0,"♦":0}};
   const saved = JSON.parse(localStorage.getItem("guandan-progress") || "null");
   if (saved && Array.isArray(saved.levels)) { state.levels = saved.levels.map(v => Math.max(0, Math.min(12, v|0))); state.levelTeam = saved.levelTeam === 1 ? 1 : 0; if(Array.isArray(saved.ranking)&&saved.ranking.length===4)state.lastRanking=saved.ranking; }
 
@@ -147,9 +147,10 @@
     const opponents=[0,1,2,3].filter(x=>team(x)!==team(p)&&state.hands[x].length);return opponents.every(x=>state.passSignals[x].some(s=>s.type===c.type&&s.size===c.size&&s.value<=c.value))||allRanks.every(r=>unseenRankCount(r,p)<need);
   }
   function moveCost(move,hand,target,p=0,context={}){
-    const c=move.combo,remain=removeMove(hand,move),memo=context.memo||new Map();if(!remain.length)return-100000;const turns=planTurns(remain,memo);let score=turns*(hand.length<=10?48:31)-move.cards.length*4;
-    score+=(c.main||c.value)*(target?0.8:0.35)+structureDamage(move,hand);score+=move.cards.filter(x=>rankValue(x.rank)>=15).length*(target?6:10);
-    if(c.bomb)score+=context.danger?12:context.closesSoon?-18:86;const controls=likelyControl(move,p);if(controls)score-=context.danger?38:19;if(turns<=1&&controls)score-=55;
+    const c=move.combo,remain=removeMove(hand,move),memo=context.memo||new Map(),early=hand.length>14;if(!remain.length)return-100000;const turns=planTurns(remain,memo);let score=turns*(hand.length<=10?48:31)-move.cards.length*(early?2:4);
+    score+=(c.main||c.value)*(target?(early?1.35:.9):(early?1.7:.65))+structureDamage(move,hand);score+=move.cards.filter(x=>rankValue(x.rank)>=15).length*(early?18:target?10:13);
+    if(c.bomb)score+=context.closesSoon?-24:context.danger?38:120;const controls=likelyControl(move,p);if(controls)score+=context.danger?-35:early?15:-10;if(turns<=1&&controls)score-=70;
+    if(!target&&early&&c.type==="single"&&groups(hand).get(move.cards[0].rank)?.length===1)score-=18;if(!target&&early&&c.type==="pair"&&groups(hand).get(move.cards[0].rank)?.length===2)score-=14;
     if(!target&&c.type==="single"&&context.enemyOne)score+=likelyControl(move,p)?10:160;if(!target&&c.type==="pair"&&context.enemyTwo)score+=95;
     return score;
   }
@@ -157,39 +158,42 @@
     const hand=state.hands[p],target=state.last,moves=generateMoves(hand,target);if(!moves.length)return null;const finish=moves.find(m=>m.cards.length===hand.length);if(finish)return finish;
     const activeEnemies=[0,1,2,3].filter(x=>team(x)!==team(p)&&state.hands[x].length),enemyMin=Math.min(...activeEnemies.map(x=>state.hands[x].length)),next=nextActive(p),nextIsEnemy=next>=0&&team(next)!==team(p),enemyOne=nextIsEnemy&&state.hands[next].length===1,enemyTwo=nextIsEnemy&&state.hands[next].length===2;
     if(target&&team(target.player)===team(p)){
-      if(enemyMin<=2&&nextIsEnemy){const block=moves.filter(m=>!m.combo.bomb&&likelyControl(m,p)).sort((a,b)=>(a.combo.main||a.combo.value)-(b.combo.main||b.combo.value))[0];if(block)return block;}
+      if(enemyMin<=1&&nextIsEnemy){const block=moves.filter(m=>!m.combo.bomb&&likelyControl(m,p)).sort((a,b)=>(a.combo.main||a.combo.value)-(b.combo.main||b.combo.value))[0];if(block)return block;}
       return null;
     }
     if(!target&&state.hands[partner(p)].length<=2){const need=state.hands[partner(p)].length,feed=moves.filter(m=>m.cards.length===need&&!m.combo.bomb).sort((a,b)=>(a.combo.main||a.combo.value)-(b.combo.main||b.combo.value))[0];if(feed)return feed;}
     let pool=[...moves];if(!target&&enemyOne){const safe=pool.filter(m=>m.combo.type!=="single");if(safe.length)pool=safe;}if(!target&&enemyTwo){const safe=pool.filter(m=>m.combo.type!=="pair");if(safe.length)pool=safe;}
-    const danger=enemyMin<=3||(target&&team(target.player)!==team(p)&&state.hands[target.player].length<=5),memo=new Map();if(!danger){const nonBomb=pool.filter(m=>!m.combo.bomb);if(nonBomb.length)pool=nonBomb;}
-    const scored=pool.map(move=>{const remain=removeMove(hand,move),closesSoon=planTurns(remain,memo)<=1;return{move,cost:moveCost(move,hand,target,p,{danger,closesSoon,enemyOne,enemyTwo,memo})};});scored.sort((a,b)=>a.cost-b.cost);return scored[0].move;
+    const danger=enemyMin<=2||(target&&team(target.player)!==team(p)&&state.hands[target.player].length<=3),memo=new Map();if(!danger){const nonBomb=pool.filter(m=>!m.combo.bomb);if(nonBomb.length)pool=nonBomb;}
+    const scored=pool.map(move=>{const remain=removeMove(hand,move),closesSoon=planTurns(remain,memo)<=1;return{move,closesSoon,cost:moveCost(move,hand,target,p,{danger,closesSoon,enemyOne,enemyTwo,memo})};});scored.sort((a,b)=>a.cost-b.cost);const best=scored[0];
+    if(target&&!danger&&team(target.player)!==team(p)&&state.hands[target.player].length>7&&!best.closesSoon){const spendsControl=best.move.cards.some(c=>rankValue(c.rank)>=15),damage=structureDamage(best.move,hand);if(best.move.combo.bomb||damage>=50||(hand.length>12&&spendsControl))return null;}
+    return best.move;
   }
 
   function applyTribute(){
-    const r=state.lastRanking;if(!r)return null;const first=r[0],second=r[1],last=r[3],doubleDown=team(first)===team(second);let pairs=doubleDown?[[last,first],[r[2],second]]:[[last,first]];
-    const losingTeam=team(last),bigJokers=[0,1,2,3].filter(p=>team(p)===losingTeam).reduce((n,p)=>n+state.hands[p].filter(c=>c.rank==="BJ").length,0);
-    if(bigJokers>=2){state.starter=first;state.tributeText=`${NAMES[last]}一方双大王抗贡`;return state.tributeText;}
-    const exchanges=[];
-    for(const [from,to] of pairs){
-      const tribute=[...state.hands[from]].filter(c=>!(c.rank===state.levelRank&&c.suit==="♥")).sort((a,b)=>rankValue(b.rank)-rankValue(a.rank))[0];
-      const back=[...state.hands[to]].filter(c=>!(c.rank===state.levelRank&&c.suit==="♥")).sort((a,b)=>rankValue(a.rank)-rankValue(b.rank))[0];
-      if(tribute&&back)exchanges.push({from,to,tribute,back});
-    }
-    if(!exchanges.length)return null;
-    for(const x of exchanges){state.hands[x.from]=state.hands[x.from].filter(c=>c.id!==x.tribute.id&&c.id!==x.back.id);state.hands[x.to]=state.hands[x.to].filter(c=>c.id!==x.back.id&&c.id!==x.tribute.id);state.hands[x.from].push(x.back);state.hands[x.to].push(x.tribute);}
-    state.hands.forEach(sortHand);const highest=exchanges.sort((a,b)=>rankValue(b.tribute.rank)-rankValue(a.tribute.rank))[0];state.starter=highest.from;
-    state.tributeText=exchanges.map(x=>`${NAMES[x.from]}向${NAMES[x.to]}进贡${x.tribute.rank}`).join("，");return state.tributeText;
+    const r=state.lastRanking;if(!r)return null;const first=r[0],second=r[1],doubleDown=team(first)===team(second),payers=doubleDown?[r[2],r[3]]:[r[3]];
+    const bigJokers=payers.reduce((n,p)=>n+state.hands[p].filter(c=>c.rank==="BJ").length,0);if(bigJokers>=2){state.starter=first;state.tributeText=`${NAMES[payers[0]]}${doubleDown?`、${NAMES[payers[1]]}`:""}持有两张大王，抗贡成功`;return{anti:true,doubleDown,payers,starter:first,text:state.tributeText,exchanges:[]};}
+    const offered=payers.map(from=>({from,tribute:[...state.hands[from]].filter(c=>!(c.rank===state.levelRank&&c.suit==="♥")).sort((a,b)=>rankValue(b.rank)-rankValue(a.rank)||naturalValue(b.rank)-naturalValue(a.rank))[0]})).filter(x=>x.tribute).sort((a,b)=>rankValue(b.tribute.rank)-rankValue(a.tribute.rank)||payers.indexOf(a.from)-payers.indexOf(b.from));
+    const receivers=doubleDown?[first,second]:[first],exchanges=offered.map((x,i)=>({...x,to:receivers[i]}));if(!exchanges.length)return null;
+    for(const x of exchanges){state.hands[x.from]=state.hands[x.from].filter(c=>c.id!==x.tribute.id);state.hands[x.to].push(x.tribute);}
+    for(const x of exchanges){const sizes=groups(state.hands[x.to]),eligible=state.hands[x.to].filter(c=>naturalValue(c.rank)<=10&&c.rank!=="SJ"&&c.rank!=="BJ"&&!(c.rank===state.levelRank&&c.suit==="♥"));x.back=[...eligible].sort((a,b)=>(sizes.get(a.rank)?.length||0)-(sizes.get(b.rank)?.length||0)||naturalValue(a.rank)-naturalValue(b.rank))[0];if(x.back){state.hands[x.to]=state.hands[x.to].filter(c=>c.id!==x.back.id);state.hands[x.from].push(x.back);}}
+    state.hands.forEach(sortHand);state.starter=exchanges[0].from;state.tributeText=exchanges.map(x=>`${NAMES[x.from]}向${NAMES[x.to]}进贡${x.tribute.rank}，${NAMES[x.to]}还${x.back?.rank||"牌"}`).join("；");return{anti:false,doubleDown,payers,starter:state.starter,text:state.tributeText,exchanges};
   }
+
+  function legalReturnCards(hand){return hand.filter(c=>naturalValue(c.rank)<=10&&c.rank!=="SJ"&&c.rank!=="BJ"&&!(c.rank===state.levelRank&&c.suit==="♥"));}
+  function chooseAutoReturn(hand){const sizes=groups(hand);return [...legalReturnCards(hand)].sort((a,b)=>(sizes.get(a.rank)?.length||0)-(sizes.get(b.rank)?.length||0)||naturalValue(a.rank)-naturalValue(b.rank))[0];}
+  function prepareTributeSession(result){const session={result,kind:null,index:-1};if(result.anti)return session;const index=result.exchanges.findIndex(x=>x.from===0||x.to===0);if(index<0)return session;const x=result.exchanges[index];session.index=index;if(x.from===0){if(x.back){state.hands[0]=state.hands[0].filter(c=>c.id!==x.back.id);state.hands[x.to].push(x.back);}state.hands[x.to]=state.hands[x.to].filter(c=>c.id!==x.tribute.id);state.hands[0].push(x.tribute);x.back=null;session.kind="tribute";}else{if(x.back){state.hands[x.from]=state.hands[x.from].filter(c=>c.id!==x.back.id);state.hands[0].push(x.back);}x.back=null;session.kind="back";}state.hands.forEach(sortHand);return session;}
+  function renderTributeTable(){const session=state.tributeSession;if(!session)return;for(let p=0;p<4;p++)$(`#gd-played-${p}`).innerHTML="";const result=session.result;if(result.anti){setMessage("抗贡成功",`${result.text}，由${NAMES[result.starter]}先出牌`);return;}result.exchanges.forEach((x,i)=>{const waitingTribute=session.kind==="tribute"&&session.index===i,waitingBack=session.kind==="back"&&session.index===i;$(`#gd-played-${x.from}`).insertAdjacentHTML("beforeend",`<div class="gd-play-record tribute-record">${waitingTribute?'<span class="gd-pass">待选贡牌</span>':cardHTML(x.tribute)}<span class="gd-play-label">${NAMES[x.from]} → ${NAMES[x.to]} · 进贡</span></div>`);$(`#gd-played-${x.to}`).insertAdjacentHTML("beforeend",`<div class="gd-play-record tribute-record">${waitingBack?'<span class="gd-pass">待选还牌</span>':x.back?cardHTML(x.back):'<span class="gd-pass">待还牌</span>'}<span class="gd-play-label">${NAMES[x.to]} → ${NAMES[x.from]} · 还贡</span></div>`);});const prompt=session.kind==="tribute"?"请先理牌，再选择一张最大的合法贡牌":session.kind==="back"?"请先理牌，再选择一张自然点数不超过 10 的牌":"贡还完成，请确认开始本局";setMessage("进贡与还贡",prompt);}
+  function confirmTributeChoice(){const session=state.tributeSession;if(!session?.kind)return;const chosen=state.hands[0].filter(c=>state.selected.has(c.id));if(chosen.length!==1){$("#gd-hint").textContent="请选择正好 1 张牌";return;}const card=chosen[0],x=session.result.exchanges[session.index];if(session.kind==="tribute"){const eligible=state.hands[0].filter(c=>!(c.rank===state.levelRank&&c.suit==="♥")),max=Math.max(...eligible.map(c=>rankValue(c.rank)));if(rankValue(card.rank)!==max||card.rank===state.levelRank&&card.suit==="♥"){$("#gd-hint").textContent="进贡必须选择手中最大的非红桃级牌";return;}state.hands[0]=state.hands[0].filter(c=>c.id!==card.id);state.hands[x.to].push(card);x.tribute=card;const back=chooseAutoReturn(state.hands[x.to]);if(back){state.hands[x.to]=state.hands[x.to].filter(c=>c.id!==back.id);state.hands[0].push(back);x.back=back;}}else{if(!legalReturnCards([card]).length){$("#gd-hint").textContent="还贡只能选择自然点数不超过 10 的非红桃级牌";return;}state.hands[0]=state.hands[0].filter(c=>c.id!==card.id);state.hands[x.from].push(card);x.back=card;}state.selected.clear();state.hands.forEach(sortHand);session.kind=null;state.tributeText=session.result.exchanges.map(e=>`${NAMES[e.from]}进贡${e.tribute.rank}，${NAMES[e.to]}还${e.back?.rank||"牌"}`).join("；");updateAll();renderTributeTable();renderControls();}
+  function finishTributePhase(){const starter=state.turn;state.tributeSession=null;renderPlayHistory();setMessage(`${NAMES[starter]}先出牌`,"贡还结束，本局开始");runTurn();}
 
   function startGame(){
     clearTimeout(state.timer); state.levelRank=LEVELS[state.levels[state.levelTeam]]; const deck=makeDeck();
     state.hands=[[],[],[],[]]; for(let i=0;i<108;i++)state.hands[i%4].push(deck[i]); state.hands.forEach(sortHand);
-    const tribute=applyTribute();
-    state.selected.clear(); state.manualGroups=[];state.flushCycle={"♠":0,"♥":0,"♣":0,"♦":0};state.last=null; state.passes=0; state.finished=[]; state.played=[];state.passSignals=[[],[],[],[]]; state.running=true;const myMeta=$("#gd-player-0 .gd-me-meta small");if(myMeta)myMeta.textContent="与小舒一队";
-    if(!tribute)state.starter=(state.starter+1)%4; state.turn=state.starter;
-    updateAll();const detected=SUITS.filter(s=>straightFlushOptions(state.hands[0],s).length).length;setMessage(`${NAMES[state.turn]}先出牌`, tribute||(detected?`有 ${detected} 种花色可组成同花顺，点击亮起的花色预选`:`本局打 ${state.levelRank}`));if(music.enabled)startMusic().catch(()=>{});
-    if(tribute){renderControls();highlightTurn();state.timer=setTimeout(runTurn,1400);}else runTurn();
+    const tribute=applyTribute(),tributeSession=tribute?prepareTributeSession(tribute):null;
+    state.selected.clear(); state.manualGroups=[];state.flushCycle={"♠":0,"♥":0,"♣":0,"♦":0};state.last=null; state.passes=0; state.finished=[]; state.played=[];state.playHistory=[];state.passSignals=[[],[],[],[]]; state.running=true;const myMeta=$("#gd-player-0 .gd-me-meta small");if(myMeta)myMeta.textContent="与小舒一队";
+    state.tributeSession=tributeSession;if(!tribute)state.starter=(state.starter+1)%4; state.turn=state.starter;
+    updateAll();renderPlayHistory();const detected=SUITS.filter(s=>straightFlushOptions(state.hands[0],s).length).length;setMessage(`${NAMES[state.turn]}先出牌`, tribute?tribute.text:(detected?`有 ${detected} 种花色可组成同花顺，点击亮起的花色预选`:`本局打 ${state.levelRank}`));if(music.enabled)startMusic().catch(()=>{});
+    if(tribute){renderTributeTable();renderControls();highlightTurn();}else runTurn();
   }
   function nextActive(from){ for(let n=1;n<=4;n++){const p=(from+n)%4;if(state.hands[p].length && !state.finished.includes(p))return p;}return -1; }
   function playMove(p,cards){
@@ -214,7 +218,7 @@
     if(state.turn<0||!state.hands[state.turn]?.length||state.finished.includes(state.turn))state.turn=nextActive(state.turn<0?0:state.turn);
     if(state.turn<0)return;
     renderControls(); highlightTurn();
-    if(state.turn!==0)state.timer=setTimeout(()=>{const player=state.turn;try{const m=chooseAI(player);m?playMove(player,m.cards):pass(player);}catch(error){const fallback=generateMoves(state.hands[player],state.last)[0];if(fallback)playMove(player,fallback.cards);else if(state.last)pass(player);}},520+Math.random()*360);
+    if(state.turn!==0){const think=1150+Math.random()*1000+Math.min(450,state.hands[state.turn].length*15);state.timer=setTimeout(()=>{const player=state.turn;try{const m=chooseAI(player);m?playMove(player,m.cards):pass(player);}catch(error){const fallback=generateMoves(state.hands[player],state.last)[0];if(fallback)playMove(player,fallback.cards);else if(state.last)pass(player);}},think);}
   }
   function finishGame(){
     state.running=false;clearTimeout(state.timer);const first=state.finished[0],matePos=state.finished.indexOf(partner(first));const gain=matePos===1?3:matePos===2?2:1;const winTeam=team(first);state.levels[winTeam]=Math.min(12,state.levels[winTeam]+gain);state.levelTeam=winTeam;
@@ -237,21 +241,24 @@
     return [...manual,...makeRanks(state.hands[0].filter(c=>!used.has(c.id))).sort((a,b)=>rankValue(b.rank)-rankValue(a.rank))];
   }
   function renderHand(){
-    const el=$("#gd-hand"),list=arrangedGroups(),landscape=innerHeight<=600&&innerWidth>innerHeight,mobile=innerWidth<=760,vGap=landscape?24:mobile?25:28,cardW=landscape?51:mobile?57:64;
+    const el=$("#gd-hand"),list=arrangedGroups(),landscape=innerHeight<=600&&innerWidth>innerHeight,mobile=innerWidth<=760,vGap=landscape?22:mobile?23:26,cardW=landscape?47:mobile?53:59;
     el.innerHTML=list.map(g=>{const ids=g.cards.map(c=>c.id).join(","),stack=`--v-gap:${vGap}px;--stack-extra:${(g.cards.length-1)*vGap}px;width:${cardW}px;flex-basis:${cardW}px`,cards=g.cards.map((c,i)=>cardHTML(c).replace('data-id=',`style="--i:${i};--stack-top:${i*vGap}px" data-id=`)).join("");if(g.type==="combo")return `<div class="gd-hand-block gd-rank-stack gd-combo-block manual" data-width="${cardW}" style="${stack}"><button class="gd-group-pick combo" data-ids="${ids}" title="全选${g.label}">全选</button><button class="gd-group-remove" data-group="${g.groupIndex}" title="拆开并还原这组牌">拆开</button>${cards}</div>`;const rankLabel=g.rank==="BJ"?"大王":g.rank==="SJ"?"小王":g.rank;return `<div class="gd-hand-block gd-rank-stack" data-width="${cardW}" data-rank="${g.rank}" style="${stack}">${g.cards.length>1?`<button class="gd-group-pick rank" data-ids="${ids}" title="全选所有 ${rankLabel}">${rankLabel} · 全选</button>`:""}${cards}</div>`;}).join("");
     const blocks=$$("#gd-hand .gd-hand-block"),available=Math.max(120,el.clientWidth-24),total=blocks.reduce((n,b)=>n+(+b.dataset.width||cardW),0),over=blocks.length>1?Math.min(0,(available-total)/(blocks.length-1)):0;blocks.forEach((node,i)=>{node.style.setProperty("--stack-overlap",`${Math.max(-28,over)}px`);node.style.zIndex=i+1;});
     $$("#gd-hand .gd-card").forEach(node=>node.classList.toggle("selected",state.selected.has(+node.dataset.id)));
   }
   function renderBacks(){for(let p=1;p<4;p++){const shown=state.running?state.hands[p].length:27,el=$(`#gd-backs-${p}`);if(p===2&&state.running&&state.hands[0].length===0){el.classList.add("revealed");el.innerHTML=`<div class="gd-revealed-hand">${sortHand([...state.hands[p]]).map(cardHTML).join("")}</div>`;}else{el.classList.remove("revealed");const n=Math.min(7,Math.ceil(shown/4));el.innerHTML=Array.from({length:n},()=>'<i class="gd-back"></i>').join("");}$(`#gd-count-${p}`).textContent=shown;}}
-  function renderCounter(){const all=state.hands.flat(),order=["BJ","SJ",state.levelRank,...RANKS.slice().reverse().filter(r=>r!==state.levelRank)];const count=(r,s)=>state.running?all.filter(c=>c.rank===r&&(!s||c.suit===s)).length:(r==="SJ"||r==="BJ"?2:s?2:8);$("#gd-counter-grid").innerHTML=order.map(r=>{const n=count(r),label=r==="BJ"?"大王":r==="SJ"?"小王":r;if(r==="SJ"||r==="BJ")return `<div class="gd-counter-cell joker-count${n?"":" zero"}"><b>${label}</b><strong>${n}</strong></div>`;return `<div class="gd-counter-cell${n?"":" zero"}"><b>${label}</b><div class="gd-suit-counts">${SUITS.map(s=>`<span class="${s==="♥"||s==="♦"?"red":""}">${s}${count(r,s)}</span>`).join("")}</div></div>`;}).join("");}
+  function renderCounter(){const unseen=state.hands.slice(1).flat(),order=["BJ","SJ",state.levelRank,...RANKS.slice().reverse().filter(r=>r!==state.levelRank)];const count=(r,s)=>state.running?unseen.filter(c=>c.rank===r&&(!s||c.suit===s)).length:(r==="SJ"||r==="BJ"?2:s?2:8);$("#gd-counter-grid").innerHTML=order.map(r=>{const n=count(r),label=r==="BJ"?"大王":r==="SJ"?"小王":r;if(r==="SJ"||r==="BJ")return `<div class="gd-counter-cell joker-count${n?"":" zero"}"><b>${label}</b><strong>${n}</strong></div>`;return `<div class="gd-counter-cell${n?"":" zero"}"><b>${label}</b><div class="gd-suit-counts">${SUITS.map(s=>`<span class="${s==="♥"||s==="♦"?"red":""}">${s}${count(r,s)}</span>`).join("")}</div></div>`;}).join("");}
   function updateHeader(){$("#gd-level-us").textContent=LEVELS[state.levels[0]];$("#gd-level-them").textContent=LEVELS[state.levels[1]];$("#gd-level-now").textContent=`本局打 ${state.levelRank}`;}
   function updateAll(){renderHand();renderBacks();renderCounter();updateHeader();}
-  function showPlay(p,cards,label){for(let i=0;i<4;i++)if(i!==p)$(`#gd-played-${i}`).innerHTML="";$(`#gd-played-${p}`).innerHTML=cards.map(cardHTML).join("")+`<span class="gd-pass">${label}</span>`;}
-  function showPass(p){$(`#gd-played-${p}`).innerHTML='<span class="gd-pass">不出</span>';}
+  function renderPlayHistory(){for(let p=0;p<4;p++)$(`#gd-played-${p}`).innerHTML="";state.playHistory.forEach((entry,index)=>{const age=state.playHistory.length-1-index,when=age===0?"最新":`前 ${age} 手`;$(`#gd-played-${entry.player}`).insertAdjacentHTML("beforeend",`<div class="gd-play-record${entry.pass?" pass-record":""}" data-age="${age}">${entry.pass?'<span class="gd-pass">不出</span>':entry.cards.map(cardHTML).join("")}<span class="gd-play-label">${when} · ${NAMES[entry.player]} · ${entry.label}</span></div>`);});}
+  function showPlay(p,cards,label){state.playHistory.push({player:p,cards:[...cards],label,pass:false});state.playHistory=state.playHistory.slice(-3);renderPlayHistory();}
+  function showPass(p){state.playHistory.push({player:p,cards:[],label:"不出",pass:true});state.playHistory=state.playHistory.slice(-3);renderPlayHistory();}
   function setMessage(status,msg){$("#gd-status").textContent=status;$("#gd-message").textContent=msg;$("#gd-hint").textContent=msg;}
   function highlightTurn(){$$(".gd-player,.gd-me").forEach(x=>x.classList.remove("turn"));const el=$(`#gd-player-${state.turn}`);if(el)el.classList.add("turn");}
   function renderControls(){
-    renderFlushTools();const el=$("#gd-actions");if(!state.running){el.innerHTML='<button class="gd-btn primary" id="gd-start">开始游戏</button>';$("#gd-start").onclick=startGame;return;}const arrangeLabel=state.selected.size>1?`收为一组 (${state.selected.size})`:"收为一组",cancel=state.selected.size?'<button class="gd-btn cancel" id="gd-clear-btn">取消预选</button>':"";
+    const el=$("#gd-actions");if(!state.running){renderFlushTools();el.innerHTML='<button class="gd-btn primary" id="gd-start">开始游戏</button>';$("#gd-start").onclick=startGame;return;}const arrangeLabel=state.selected.size>1?`收为一组 (${state.selected.size})`:"收为一组",cancel=state.selected.size?'<button class="gd-btn cancel" id="gd-clear-btn">取消预选</button>':"";
+    if(state.tributeSession){$("#gd-flush-tools").innerHTML='<span>贡还阶段 · 可先理牌</span>';const kind=state.tributeSession.kind;if(kind){el.innerHTML=`<button class="gd-btn arrange" id="gd-arrange-btn">${arrangeLabel}</button>${cancel}<button class="gd-btn primary" id="gd-confirm-tribute">${kind==="tribute"?"确认进贡":"确认还贡"}</button>`;$("#gd-arrange-btn").onclick=arrangeHand;if($("#gd-clear-btn"))$("#gd-clear-btn").onclick=clearSelection;$("#gd-confirm-tribute").onclick=confirmTributeChoice;}else{el.innerHTML='<button class="gd-btn primary" id="gd-finish-tribute">贡还完成 · 开始本局</button>';$("#gd-finish-tribute").onclick=finishTributePhase;}return;}
+    renderFlushTools();
     if(!state.hands[0].length){el.innerHTML='<button class="gd-btn spectator" disabled>观战中 · 电脑继续出牌</button>';return;}
     if(state.turn!==0){el.innerHTML=`<button class="gd-btn arrange" id="gd-arrange-btn">${arrangeLabel}</button>${cancel}<button class="gd-btn" disabled>电脑思考中</button>`;$("#gd-arrange-btn").onclick=arrangeHand;if($("#gd-clear-btn"))$("#gd-clear-btn").onclick=clearSelection;return;}
     el.innerHTML=`<button class="gd-btn arrange" id="gd-arrange-btn">${arrangeLabel}</button>${cancel}<button class="gd-btn" id="gd-hint-btn">提示</button>${state.last?'<button class="gd-btn" id="gd-pass-btn">不出</button>':""}<button class="gd-btn primary" id="gd-play-btn">出牌</button>`;
@@ -267,7 +274,7 @@
   let drag=false,dragSelect=true,dragSeen=new Set();
   function touchCard(node){if(!node||!node.classList.contains("gd-card")||!node.closest("#gd-hand"))return;const id=+node.dataset.id;if(dragSeen.has(id))return;dragSeen.add(id);dragSelect?state.selected.add(id):state.selected.delete(id);node.classList.toggle("selected",dragSelect);}
   function pickGroup(button){const ids=button.dataset.ids.split(",").map(Number),all=ids.every(id=>state.selected.has(id));ids.forEach(id=>all?state.selected.delete(id):state.selected.add(id));renderHand();describeSelection();}
-  $("#gd-hand").addEventListener("pointerdown",e=>{const remove=e.target.closest(".gd-group-remove");if(remove){e.preventDefault();state.manualGroups.splice(+remove.dataset.group,1);renderHand();renderControls();$("#gd-hint").textContent="牌组已拆开并还原";return;}const pick=e.target.closest(".gd-group-pick");if(pick){e.preventDefault();pickGroup(pick);renderControls();return;}const c=e.target.closest(".gd-card");if(!c||state.turn!==0)return;drag=true;dragSeen.clear();dragSelect=!state.selected.has(+c.dataset.id);touchCard(c);});
+  $("#gd-hand").addEventListener("pointerdown",e=>{const remove=e.target.closest(".gd-group-remove");if(remove){e.preventDefault();state.manualGroups.splice(+remove.dataset.group,1);renderHand();renderControls();$("#gd-hint").textContent="牌组已拆开并还原";return;}const pick=e.target.closest(".gd-group-pick");if(pick){e.preventDefault();pickGroup(pick);renderControls();return;}const c=e.target.closest(".gd-card");if(!c||(state.turn!==0&&!state.tributeSession?.kind))return;drag=true;dragSeen.clear();dragSelect=!state.selected.has(+c.dataset.id);touchCard(c);});
   window.addEventListener("pointermove",e=>{if(!drag)return;touchCard(document.elementFromPoint(e.clientX,e.clientY)?.closest?.(".gd-card"));});window.addEventListener("pointerup",()=>{if(drag){describeSelection();renderControls();}drag=false;dragSeen.clear();});
   $("#gd-rules").onclick=()=>$("#gd-rules-dialog").showModal();$("#gd-rules-dialog .gd-close").onclick=()=>$("#gd-rules-dialog").close();$("#gd-again").onclick=()=>{$("#gd-result-dialog").close();startGame();};
   $("#gd-music").onclick=toggleMusic;updateMusicButton();document.addEventListener("visibilitychange",()=>{if(document.hidden)stopMusic();else if(music.enabled)startMusic().catch(()=>{});});
