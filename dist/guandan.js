@@ -125,6 +125,12 @@
     return target ? valid.filter(x=>beats(x.combo,target.combo)) : valid;
   }
   function removeMove(hand,move){const ids=new Set(move.cards.map(c=>c.id));return hand.filter(c=>!ids.has(c.id));}
+  function bombBreakPenalty(move,hand){
+    const handGroups=groups(hand);let penalty=0;
+    for(const [rank,cards] of handGroups){const used=move.cards.filter(c=>c.rank===rank).length;if(cards.length>=4&&used>0&&used<cards.length)penalty+=34+(cards.length-used)*7;}
+    const jokers=hand.filter(c=>c.rank==="SJ"||c.rank==="BJ"),usedJokers=move.cards.filter(c=>c.rank==="SJ"||c.rank==="BJ").length;if(jokers.length===4&&usedJokers>0&&usedJokers<4)penalty+=58;
+    return penalty;
+  }
   function moveShape(move){const bonus={straight:25,pair_run:31,triple_run:34,triple_pair:23,triple:8,pair:5,single:0,bomb:18,straight_flush:30,joker_bomb:35};return move.cards.length*18+(bonus[move.combo.type]||0)-move.cards.filter(c=>c.rank===state.levelRank&&c.suit==="♥").length*13;}
   function quickTurns(hand){
     if(!hand.length)return 0;const count=new Map([...groups(hand)].map(([r,c])=>[r,c.length]));let turns=0;
@@ -132,13 +138,13 @@
     const takeRuns=(need,length)=>{let found=true;while(found){found=false;const vals=RANKS.map(naturalValue);for(let i=0;i<=vals.length-length;i++){const run=vals.slice(i,i+length),ranks=run.map(v=>RANKS.find(r=>naturalValue(r)===v));if(ranks.every(r=>(count.get(r)||0)===need)){ranks.forEach(r=>count.set(r,0));turns++;found=true;break;}}}};
     takeRuns(3,2);takeRuns(2,3);takeRuns(1,5);const triples=[...count].filter(([,n])=>n===3).map(([r])=>r),pairs=[...count].filter(([,n])=>n===2).map(([r])=>r);while(triples.length&&pairs.length){count.set(triples.pop(),0);count.set(pairs.pop(),0);turns++;}for(const n of count.values())if(n>0)turns++;return turns;
   }
-  function planTurns(hand,memo=new Map(),depth=0){
-    if(!hand.length)return 0;const key=`${depth}|${hand.map(c=>c.id).sort((a,b)=>a-b).join(".")}`;if(memo.has(key))return memo.get(key);if(depth>=2||hand.length>10){const q=quickTurns(hand);memo.set(key,q);return q;}const moves=generateMoves(hand);if(moves.some(m=>m.cards.length===hand.length)){memo.set(key,1);return 1;}
-    const candidates=moves.sort((a,b)=>moveShape(b)-moveShape(a)).slice(0,hand.length<=7?20:12);let best=99;for(const move of candidates)best=Math.min(best,1+planTurns(removeMove(hand,move),memo,depth+1));memo.set(key,best);return best;
+  function planTurns(hand,memo=new Map(),depth=0,budget=null){
+    if(!hand.length)return 0;const maxDepth=budget??(hand.length<=16?6:hand.length<=20?4:2),key=`${maxDepth}|${depth}|${hand.map(c=>c.id).sort((a,b)=>a-b).join(".")}`;if(memo.has(key))return memo.get(key);if(depth>=maxDepth){const q=quickTurns(hand);memo.set(key,q);return q;}let moves=generateMoves(hand);if(moves.some(m=>m.cards.length===hand.length)){memo.set(key,1);return 1;}
+    const limit=hand.length<=12?28:hand.length<=16?22:14,candidates=moves.sort((a,b)=>moveShape(b)-bombBreakPenalty(b,hand)-moveShape(a)+bombBreakPenalty(a,hand)).slice(0,limit);let best=99;for(const move of candidates){const estimate=1+planTurns(removeMove(hand,move),memo,depth+1,maxDepth);if(estimate<best)best=estimate;if(best<=2)break;}memo.set(key,best);return best;
   }
   function structureDamage(move,hand){
-    let cost=0;const handGroups=groups(hand);for(const [rank,cards] of handGroups){const used=move.cards.filter(c=>c.rank===rank).length;if(!used||used===cards.length)continue;if(cards.length>=4)cost+=62;else if(cards.length===3)cost+=16;else if(cards.length===2)cost+=9;}
-    cost+=move.cards.filter(c=>c.rank===state.levelRank&&c.suit==="♥").length*20;return cost;
+    let cost=0;const handGroups=groups(hand);for(const [rank,cards] of handGroups){const used=move.cards.filter(c=>c.rank===rank).length;if(!used||used===cards.length)continue;if(cards.length===3)cost+=16;else if(cards.length===2)cost+=9;}
+    cost+=bombBreakPenalty(move,hand);cost+=move.cards.filter(c=>c.rank===state.levelRank&&c.suit==="♥").length*20;return cost;
   }
   function unseenRankCount(rank,p){const total=rank==="SJ"||rank==="BJ"?2:8,played=state.played.filter(c=>c.rank===rank).length,own=state.hands[p].filter(c=>c.rank===rank).length;return Math.max(0,total-played-own);}
   function likelyControl(move,p){
@@ -159,12 +165,14 @@
     const activeEnemies=[0,1,2,3].filter(x=>team(x)!==team(p)&&state.hands[x].length),enemyMin=Math.min(...activeEnemies.map(x=>state.hands[x].length)),next=nextActive(p),nextIsEnemy=next>=0&&team(next)!==team(p),enemyOne=nextIsEnemy&&state.hands[next].length===1,enemyTwo=nextIsEnemy&&state.hands[next].length===2;
     if(target&&team(target.player)===team(p)){
       if(enemyMin<=1&&nextIsEnemy){const block=moves.filter(m=>!m.combo.bomb&&likelyControl(m,p)).sort((a,b)=>(a.combo.main||a.combo.value)-(b.combo.main||b.combo.value))[0];if(block)return block;}
+      if(hand.length<=10&&state.hands[target.player].length>6){const memo=new Map(),takeover=moves.filter(m=>!m.combo.bomb&&likelyControl(m,p)&&planTurns(removeMove(hand,m),memo)<=1).sort((a,b)=>structureDamage(a,hand)-structureDamage(b,hand))[0];if(takeover)return takeover;}
       return null;
     }
-    if(!target&&state.hands[partner(p)].length<=2){const need=state.hands[partner(p)].length,feed=moves.filter(m=>m.cards.length===need&&!m.combo.bomb).sort((a,b)=>(a.combo.main||a.combo.value)-(b.combo.main||b.combo.value))[0];if(feed)return feed;}
+    if(!target&&state.hands[partner(p)].length<=2){const mateCards=state.hands[partner(p)],mateCombo=classify(mateCards);if(mateCombo){const feed=moves.filter(m=>!m.combo.bomb&&m.combo.type===mateCombo.type&&m.combo.size===mateCombo.size&&beats(mateCombo,m.combo)).sort((a,b)=>(a.combo.main||a.combo.value)-(b.combo.main||b.combo.value))[0];if(feed)return feed;}}
     let pool=[...moves];if(!target&&enemyOne){const safe=pool.filter(m=>m.combo.type!=="single");if(safe.length)pool=safe;}if(!target&&enemyTwo){const safe=pool.filter(m=>m.combo.type!=="pair");if(safe.length)pool=safe;}
-    const danger=enemyMin<=2||(target&&team(target.player)!==team(p)&&state.hands[target.player].length<=3),memo=new Map();if(!danger){const nonBomb=pool.filter(m=>!m.combo.bomb);if(nonBomb.length)pool=nonBomb;}
-    const scored=pool.map(move=>{const remain=removeMove(hand,move),closesSoon=planTurns(remain,memo)<=1;return{move,closesSoon,cost:moveCost(move,hand,target,p,{danger,closesSoon,enemyOne,enemyTwo,memo})};});scored.sort((a,b)=>a.cost-b.cost);const best=scored[0];
+    const danger=enemyMin<=2||(target&&team(target.player)!==team(p)&&state.hands[target.player].length<=3),memo=new Map();
+    const scored=pool.map(move=>{const remain=removeMove(hand,move),futureTurns=planTurns(remain,memo),closesSoon=futureTurns<=1;return{move,closesSoon,futureTurns,cost:moveCost(move,hand,target,p,{danger,closesSoon,enemyOne,enemyTwo,memo})+futureTurns*(hand.length<=16?34:12)};});scored.sort((a,b)=>a.cost-b.cost||a.futureTurns-b.futureTurns);let best=scored[0];
+    if(!danger&&hand.length>8){const tolerance=hand.length>18?4.5:2.8,near=scored.filter(x=>x.cost<=best.cost+tolerance).slice(0,3);if(near.length>1){const weights=near.map((x,i)=>Math.exp(-(x.cost-best.cost)/2.2)/(i+1)),total=weights.reduce((a,b)=>a+b,0);let roll=Math.random()*total;for(let i=0;i<near.length;i++){roll-=weights[i];if(roll<=0){best=near[i];break;}}}}
     if(target&&!danger&&team(target.player)!==team(p)&&state.hands[target.player].length>7&&!best.closesSoon){const spendsControl=best.move.cards.some(c=>rankValue(c.rank)>=15),damage=structureDamage(best.move,hand);if(best.move.combo.bomb||damage>=50||(hand.length>12&&spendsControl))return null;}
     return best.move;
   }
