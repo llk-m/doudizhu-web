@@ -7,7 +7,7 @@
   const NAMES = ["你", "阿明", "小岚", "小雅"];
   const LEVELS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
   const TYPE_NAME = {single:"单张",pair:"对子",triple:"三张",triple_pair:"三带二",straight:"顺子",pair_run:"三连对",triple_run:"钢板",bomb:"炸弹",straight_flush:"同花顺",joker_bomb:"四王炸"};
-  const state = {hands:[[],[],[],[]], selected:new Set(), turn:0, last:null, passes:0, finished:[], played:[], running:false, timer:0, levels:[0,0], levelTeam:0, levelRank:"2", starter:0, lastRanking:null, tributeText:""};
+  const state = {hands:[[],[],[],[]], selected:new Set(), turn:0, last:null, passes:0, finished:[], played:[], running:false, timer:0, levels:[0,0], levelTeam:0, levelRank:"2", starter:0, lastRanking:null, tributeText:"", arrangeMode:"rank"};
   const saved = JSON.parse(localStorage.getItem("guandan-progress") || "null");
   if (saved && Array.isArray(saved.levels)) { state.levels = saved.levels.map(v => Math.max(0, Math.min(12, v|0))); state.levelTeam = saved.levelTeam === 1 ? 1 : 0; if(Array.isArray(saved.ranking)&&saved.ranking.length===4)state.lastRanking=saved.ranking; }
 
@@ -51,11 +51,12 @@
   function classify(cards){
     const wildIndexes=[]; cards.forEach((c,i)=>{if(c.rank===state.levelRank&&c.suit==="♥")wildIndexes.push(i);});
     const natural=baseClassify(cards); if(!wildIndexes.length)return natural;
-    let best=natural, tries=0; const candidates=[...RANKS];
+    let best=natural, tries=0; const candidates=[...RANKS], nonWild=cards.filter((_,i)=>!wildIndexes.includes(i));
     const copy=cards.map(c=>({...c}));
+    const consider=()=>{const combo=baseClassify(copy);if(combo&&(!best||combo.bomb&&!best.bomb||combo.bomb===best.bomb&&(combo.value>best.value||combo.value===best.value&&(combo.main||0)>(best.main||0))))best=combo;};
     (function assign(depth){
       if(tries>420)return;
-      if(depth===wildIndexes.length){tries++;const combo=baseClassify(copy);if(combo&&(!best||combo.bomb&&!best.bomb||combo.bomb===best.bomb&&(combo.value>best.value||combo.value===best.value&&(combo.main||0)>(best.main||0))))best=combo;return;}
+      if(depth===wildIndexes.length){tries++;consider();const suit=nonWild.length&&nonWild.every(c=>c.suit===nonWild[0].suit)?nonWild[0].suit:null;if(suit){wildIndexes.forEach(i=>copy[i].suit=suit);consider();wildIndexes.forEach(i=>copy[i].suit="♥");}return;}
       for(const rank of candidates){copy[wildIndexes[depth]].rank=rank;assign(depth+1);}
     })(0);
     return best;
@@ -93,7 +94,7 @@
     const naturals=[...g.entries()].filter(([r])=>r!=="SJ"&&r!=="BJ").sort((a,b)=>naturalValue(a[0])-naturalValue(b[0]));
     const seqRanks=[...new Set(naturals.map(x=>naturalValue(x[0])))];
     for(let i=0;i<=seqRanks.length-5;i++){const vals=seqRanks.slice(i,i+5);if(consecutive(vals)){const es=vals.map(v=>naturals.find(x=>naturalValue(x[0])===v));moves.push(es.map(e=>e[1][0]));for(const s of SUITS)if(es.every(e=>e[1].some(c=>c.suit===s)))moves.push(es.map(e=>e[1].find(c=>c.suit===s)));}}
-    const lowAce=[2,3,4,5,14].map(v=>naturals.find(x=>naturalValue(x[0])===v)); if(lowAce.every(Boolean))moves.push(lowAce.map(e=>e[1][0]));
+    const lowAce=[2,3,4,5,14].map(v=>naturals.find(x=>naturalValue(x[0])===v)); if(lowAce.every(Boolean)){moves.push(lowAce.map(e=>e[1][0]));for(const s of SUITS)if(lowAce.every(e=>e[1].some(c=>c.suit===s)))moves.push(lowAce.map(e=>e[1].find(c=>c.suit===s)));}
     for(let i=0;i<naturals.length;i++){
       const p3=naturals.slice(i,i+3); if(p3.length===3&&p3.every(e=>e[1].length>=2)&&consecutive(p3.map(e=>naturalValue(e[0]))))moves.push(p3.flatMap(e=>e[1].slice(0,2)));
       const t2=naturals.slice(i,i+2); if(t2.length===2&&t2.every(e=>e[1].length>=3)&&consecutive(t2.map(e=>naturalValue(e[0]))))moves.push(t2.flatMap(e=>e[1].slice(0,3)));
@@ -106,7 +107,7 @@
         }
       }
       const windows=[];for(let low=2;low<=10;low++)windows.push([low,low+1,low+2,low+3,low+4]);windows.push([2,3,4,5,14]);
-      for(const vals of windows){const chosen=[],missing=[];for(const v of vals){const e=[...plainGroups.entries()].find(([r])=>naturalValue(r)===v);e?chosen.push(e[1][0]):missing.push(v);}if(missing.length&&missing.length<=wilds.length)moves.push([...chosen,...wilds.slice(0,missing.length)]);}
+      for(const vals of windows){const chosen=[],missing=[];for(const v of vals){const e=[...plainGroups.entries()].find(([r])=>naturalValue(r)===v);e?chosen.push(e[1][0]):missing.push(v);}if(missing.length&&missing.length<=wilds.length)moves.push([...chosen,...wilds.slice(0,missing.length)]);for(const suit of SUITS){const suited=[],suitMissing=[];for(const v of vals){const card=plain.find(c=>naturalValue(c.rank)===v&&c.suit===suit);card?suited.push(card):suitMissing.push(v);}if(suitMissing.length&&suitMissing.length<=wilds.length)moves.push([...suited,...wilds.slice(0,suitMissing.length)]);}}
       const rankEntries=[...plainGroups.values()];
       for(const t of rankEntries)for(const p of rankEntries){if(t[0].rank===p[0].rank)continue;for(let useT=0;useT<=wilds.length;useT++){const useP=wilds.length-useT;if(t.length+useT>=3&&p.length+useP>=2&&useT<=3&&useP<=2)moves.push([...t.slice(0,3-useT),...p.slice(0,2-useP),...wilds]);}}
     }
@@ -209,12 +210,18 @@
     const wild=c.rank===state.levelRank&&c.suit==="♥";
     return `<div class="gd-card${red?" red":""}${joker?" joker":""}" data-id="${c.id}"><span class="gd-rank">${label}</span><span class="gd-suit">${joker?"★":c.suit}</span><span class="gd-big-suit">${joker?"★":c.suit}</span>${wild?'<i class="gd-wild">配</i>':""}</div>`;
   }
+  function arrangedGroups(){
+    const list=[...groups(state.hands[0]).entries()].map(([rank,cards])=>({rank,cards:[...cards].sort((a,b)=>SUITS.indexOf(a.suit)-SUITS.indexOf(b.suit))}));
+    if(state.arrangeMode==="smart")return list.sort((a,b)=>{const bucket=x=>x.cards.length>=4?0:x.cards.length===3?1:x.cards.length===2?2:3;return bucket(a)-bucket(b)||rankValue(a.rank)-rankValue(b.rank);});
+    return list.sort((a,b)=>rankValue(a.rank)-rankValue(b.rank));
+  }
   function renderHand(){
-    const el=$("#gd-hand");el.innerHTML=state.hands[0].map(cardHTML).join("");const cards=$$("#gd-hand .gd-card");
-    const available=Math.max(120,el.clientWidth-24),w=57,over=cards.length>1?Math.min(0,(available-w*cards.length)/(cards.length-1)):0;cards.forEach(node=>{node.style.setProperty("--overlap",`${Math.max(-46,over)}px`);node.classList.toggle("selected",state.selected.has(+node.dataset.id));});
+    const el=$("#gd-hand"),list=arrangedGroups(),vGap=innerHeight<=600&&innerWidth>innerHeight?3:innerWidth<=760?7:10;el.innerHTML=list.map(g=>`<div class="gd-rank-stack" data-rank="${g.rank}" style="--v-gap:${vGap}px;--stack-extra:${(g.cards.length-1)*vGap}px">${g.cards.map((c,i)=>cardHTML(c).replace('data-id=',`style="--i:${i};--stack-top:${i*vGap}px" data-id=`)).join("")}</div>`).join("");
+    const stacks=$$("#gd-hand .gd-rank-stack"),available=Math.max(120,el.clientWidth-24),w=57,over=stacks.length>1?Math.min(0,(available-w*stacks.length)/(stacks.length-1)):0;stacks.forEach((node,i)=>{node.style.setProperty("--stack-overlap",`${Math.max(-39,over)}px`);node.style.zIndex=i+1;});
+    $$("#gd-hand .gd-card").forEach(node=>node.classList.toggle("selected",state.selected.has(+node.dataset.id)));
   }
   function renderBacks(){for(let p=1;p<4;p++){const shown=state.running?state.hands[p].length:27,n=Math.min(7,Math.ceil(shown/4));$(`#gd-backs-${p}`).innerHTML=Array.from({length:n},()=>'<i class="gd-back"></i>').join("");$(`#gd-count-${p}`).textContent=shown;}}
-  function renderCounter(){const all=state.hands.flat();const count=r=>state.running?all.filter(c=>c.rank===r).length:(r==="SJ"||r==="BJ"?2:8);const order=["BJ","SJ",state.levelRank,...RANKS.slice().reverse().filter(r=>r!==state.levelRank)];$("#gd-counter-grid").innerHTML=order.map(r=>{const n=count(r),label=r==="BJ"?"大王":r==="SJ"?"小王":r;return `<div class="gd-counter-cell${n?"":" zero"}"><b>${label}</b><span>${n}</span></div>`}).join("");}
+  function renderCounter(){const all=state.hands.flat(),order=["BJ","SJ",state.levelRank,...RANKS.slice().reverse().filter(r=>r!==state.levelRank)];const count=(r,s)=>state.running?all.filter(c=>c.rank===r&&(!s||c.suit===s)).length:(r==="SJ"||r==="BJ"?2:s?2:8);$("#gd-counter-grid").innerHTML=order.map(r=>{const n=count(r),label=r==="BJ"?"大王":r==="SJ"?"小王":r;if(r==="SJ"||r==="BJ")return `<div class="gd-counter-cell joker-count${n?"":" zero"}"><b>${label}</b><strong>${n}</strong></div>`;return `<div class="gd-counter-cell${n?"":" zero"}"><b>${label}</b><div class="gd-suit-counts">${SUITS.map(s=>`<span class="${s==="♥"||s==="♦"?"red":""}">${s}${count(r,s)}</span>`).join("")}</div></div>`;}).join("");}
   function updateHeader(){$("#gd-level-us").textContent=LEVELS[state.levels[0]];$("#gd-level-them").textContent=LEVELS[state.levels[1]];$("#gd-level-now").textContent=`本局打 ${state.levelRank}`;}
   function updateAll(){renderHand();renderBacks();renderCounter();updateHeader();}
   function showPlay(p,cards,label){for(let i=0;i<4;i++)if(i!==p)$(`#gd-played-${i}`).innerHTML="";$(`#gd-played-${p}`).innerHTML=cards.map(cardHTML).join("")+`<span class="gd-pass">${label}</span>`;}
@@ -223,16 +230,18 @@
   function highlightTurn(){$$(".gd-player,.gd-me").forEach(x=>x.classList.remove("turn"));const el=$(`#gd-player-${state.turn}`);if(el)el.classList.add("turn");}
   function renderControls(){
     const el=$("#gd-actions");if(!state.running){el.innerHTML='<button class="gd-btn primary" id="gd-start">开始游戏</button>';$("#gd-start").onclick=startGame;return;}
-    if(state.turn!==0){el.innerHTML='<button class="gd-btn" disabled>电脑思考中</button>';return;}
-    el.innerHTML=`<button class="gd-btn" id="gd-hint-btn">提示</button>${state.last?'<button class="gd-btn" id="gd-pass-btn">不出</button>':""}<button class="gd-btn primary" id="gd-play-btn">出牌</button>`;
-    $("#gd-hint-btn").onclick=hintMove;if($("#gd-pass-btn"))$("#gd-pass-btn").onclick=()=>pass(0);$("#gd-play-btn").onclick=humanPlay;
+    if(state.turn!==0){el.innerHTML='<button class="gd-btn arrange" id="gd-arrange-btn">理牌</button><button class="gd-btn" disabled>电脑思考中</button>';$("#gd-arrange-btn").onclick=arrangeHand;return;}
+    el.innerHTML=`<button class="gd-btn arrange" id="gd-arrange-btn">理牌</button><button class="gd-btn" id="gd-hint-btn">提示</button>${state.last?'<button class="gd-btn" id="gd-pass-btn">不出</button>':""}<button class="gd-btn primary" id="gd-play-btn">出牌</button>`;
+    $("#gd-arrange-btn").onclick=arrangeHand;$("#gd-hint-btn").onclick=hintMove;if($("#gd-pass-btn"))$("#gd-pass-btn").onclick=()=>pass(0);$("#gd-play-btn").onclick=humanPlay;
   }
+  function arrangeHand(){state.arrangeMode=state.arrangeMode==="rank"?"smart":"rank";renderHand();setMessage(state.arrangeMode==="smart"?"智能理牌":"点数理牌",state.arrangeMode==="smart"?"炸弹、三张、对子已分组":"已按牌点从小到大排列");}
+  function describeSelection(){if(!state.selected.size)return;const cards=state.hands[0].filter(c=>state.selected.has(c.id)),combo=classify(cards);if(!combo){$("#gd-hint").textContent=`已选 ${cards.length} 张`;return;}let extra="";if(combo.type==="straight_flush"){const normal=cards.filter(c=>!(c.rank===state.levelRank&&c.suit==="♥"));extra=` · ${(normal[0]?.suit)||"♥"}`;}$("#gd-hint").textContent=`已识别：${TYPE_NAME[combo.type]}${extra}`;}
   function hintMove(){const ms=generateMoves(state.hands[0],state.last);state.selected.clear();if(ms.length){const m=ms.sort((a,b)=>moveCost(a,state.hands[0],state.last)-moveCost(b,state.hands[0],state.last))[0];m.cards.forEach(c=>state.selected.add(c.id));setMessage("出牌提示",TYPE_NAME[m.combo.type]);}else setMessage("没有能压过的牌","请选择不出");renderHand();}
   function humanPlay(){const cards=state.hands[0].filter(c=>state.selected.has(c.id)),combo=classify(cards);if(!combo){setMessage("牌型不正确","请重新选择");return;}if(state.last&&!beats(combo,state.last.combo)){setMessage("压不过上一手","需要同型更大或使用炸弹");return;}playMove(0,cards);}
   let drag=false,dragSelect=true,dragSeen=new Set();
   function touchCard(node){if(!node||!node.classList.contains("gd-card")||!node.closest("#gd-hand"))return;const id=+node.dataset.id;if(dragSeen.has(id))return;dragSeen.add(id);dragSelect?state.selected.add(id):state.selected.delete(id);node.classList.toggle("selected",dragSelect);}
   $("#gd-hand").addEventListener("pointerdown",e=>{const c=e.target.closest(".gd-card");if(!c||state.turn!==0)return;drag=true;dragSeen.clear();dragSelect=!state.selected.has(+c.dataset.id);touchCard(c);});
-  window.addEventListener("pointermove",e=>{if(!drag)return;touchCard(document.elementFromPoint(e.clientX,e.clientY)?.closest?.(".gd-card"));});window.addEventListener("pointerup",()=>{drag=false;dragSeen.clear();});
+  window.addEventListener("pointermove",e=>{if(!drag)return;touchCard(document.elementFromPoint(e.clientX,e.clientY)?.closest?.(".gd-card"));});window.addEventListener("pointerup",()=>{if(drag)describeSelection();drag=false;dragSeen.clear();});
   $("#gd-rules").onclick=()=>$("#gd-rules-dialog").showModal();$("#gd-rules-dialog .gd-close").onclick=()=>$("#gd-rules-dialog").close();$("#gd-again").onclick=()=>{$("#gd-result-dialog").close();startGame();};
   $("#gd-landscape").onclick=async()=>{try{if(document.documentElement.requestFullscreen&&!document.fullscreenElement)await document.documentElement.requestFullscreen();if(screen.orientation?.lock)await screen.orientation.lock("landscape");}catch(e){setMessage("请旋转手机","浏览器不允许网页强制旋转时，请开启系统自动旋转");}};
   window.addEventListener("resize",()=>state.running&&renderHand());
