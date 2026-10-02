@@ -7,9 +7,9 @@
   const NAMES = ["你", "阿明", "小岚", "小雅"];
   const LEVELS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
   const TYPE_NAME = {single:"单张",pair:"对子",triple:"三张",triple_pair:"三带二",straight:"顺子",pair_run:"三连对",triple_run:"钢板",bomb:"炸弹",straight_flush:"同花顺",joker_bomb:"四王炸"};
-  const state = {hands:[[],[],[],[]], selected:new Set(), turn:0, last:null, passes:0, finished:[], played:[], running:false, timer:0, levels:[0,0], levelTeam:0, levelRank:"2", starter:0};
+  const state = {hands:[[],[],[],[]], selected:new Set(), turn:0, last:null, passes:0, finished:[], played:[], running:false, timer:0, levels:[0,0], levelTeam:0, levelRank:"2", starter:0, lastRanking:null, tributeText:""};
   const saved = JSON.parse(localStorage.getItem("guandan-progress") || "null");
-  if (saved && Array.isArray(saved.levels)) { state.levels = saved.levels.map(v => Math.max(0, Math.min(12, v|0))); state.levelTeam = saved.levelTeam === 1 ? 1 : 0; }
+  if (saved && Array.isArray(saved.levels)) { state.levels = saved.levels.map(v => Math.max(0, Math.min(12, v|0))); state.levelTeam = saved.levelTeam === 1 ? 1 : 0; if(Array.isArray(saved.ranking)&&saved.ranking.length===4)state.lastRanking=saved.ranking; }
 
   function team(p){ return p % 2; }
   function partner(p){ return (p + 2) % 4; }
@@ -98,6 +98,18 @@
       const p3=naturals.slice(i,i+3); if(p3.length===3&&p3.every(e=>e[1].length>=2)&&consecutive(p3.map(e=>naturalValue(e[0]))))moves.push(p3.flatMap(e=>e[1].slice(0,2)));
       const t2=naturals.slice(i,i+2); if(t2.length===2&&t2.every(e=>e[1].length>=3)&&consecutive(t2.map(e=>naturalValue(e[0]))))moves.push(t2.flatMap(e=>e[1].slice(0,3)));
     }
+    const wilds=hand.filter(c=>c.rank===state.levelRank&&c.suit==="♥"), plain=hand.filter(c=>!wilds.some(w=>w.id===c.id)), plainGroups=groups(plain);
+    if(wilds.length){
+      for(const [,cs] of plainGroups){
+        for(let size=2;size<=Math.min(8,cs.length+wilds.length);size++){
+          const need=Math.max(0,size-cs.length);if(need>0&&need<=wilds.length)moves.push([...cs,...wilds.slice(0,need)]);
+        }
+      }
+      const windows=[];for(let low=2;low<=10;low++)windows.push([low,low+1,low+2,low+3,low+4]);windows.push([2,3,4,5,14]);
+      for(const vals of windows){const chosen=[],missing=[];for(const v of vals){const e=[...plainGroups.entries()].find(([r])=>naturalValue(r)===v);e?chosen.push(e[1][0]):missing.push(v);}if(missing.length&&missing.length<=wilds.length)moves.push([...chosen,...wilds.slice(0,missing.length)]);}
+      const rankEntries=[...plainGroups.values()];
+      for(const t of rankEntries)for(const p of rankEntries){if(t[0].rank===p[0].rank)continue;for(let useT=0;useT<=wilds.length;useT++){const useP=wilds.length-useT;if(t.length+useT>=3&&p.length+useP>=2&&useT<=3&&useP<=2)moves.push([...t.slice(0,3-useT),...p.slice(0,2-useP),...wilds]);}}
+    }
     const jokers=hand.filter(c=>c.rank==="SJ"||c.rank==="BJ"); if(jokers.length===4)moves.push(jokers);
     const valid=uniqueMoves(moves).map(cards=>({cards,combo:classify(cards)})).filter(x=>x.combo);
     return target ? valid.filter(x=>beats(x.combo,target.combo)) : valid;
@@ -108,6 +120,8 @@
     score += (c.main||c.value)*.65;
     if(c.bomb)score += target&&target.combo.bomb ? 8 : 70;
     score += move.cards.filter(x=>rankValue(x.rank)>=15).length*9;
+    score += move.cards.filter(x=>x.rank===state.levelRank&&x.suit==="♥").length*17;
+    const handGroups=groups(hand);for(const [rank,cards] of handGroups)if(cards.length>=4){const used=move.cards.filter(ca=>ca.rank===rank).length;if(used>0&&used<cards.length)score+=48;}
     if(move.cards.length===hand.length)score-=1000;
     const remain=hand.filter(ca=>!move.cards.some(m=>m.id===ca.id));
     score += estimateTurns(remain)*16;
@@ -124,20 +138,41 @@
     if(target && team(target.player)===team(p)){
       const finish=moves.find(m=>m.cards.length===hand.length);
       if(finish)return finish;
-      if(state.hands[target.player].length<=5)return null;
+      return null;
     }
-    const danger=target && team(target.player)!==team(p) && state.hands[target.player].length<=4;
+    if(!target&&state.hands[partner(p)].length<=2){const need=state.hands[partner(p)].length;const feed=moves.filter(m=>m.cards.length===need&&!m.combo.bomb).sort((a,b)=>(a.combo.main||a.combo.value)-(b.combo.main||b.combo.value))[0];if(feed)return feed;}
+    const enemyCounts=[0,1,2,3].filter(x=>team(x)!==team(p)&&state.hands[x].length).map(x=>state.hands[x].length);
+    const danger=target&&team(target.player)!==team(p)&&(state.hands[target.player].length<=4||Math.min(...enemyCounts)<=2);
     let pool=moves;
     if(!danger){const nonBomb=pool.filter(m=>!m.combo.bomb);if(nonBomb.length)pool=nonBomb;}
+    if(danger&&target){const finish=pool.find(m=>m.cards.length===hand.length);if(finish)return finish;}
     return pool.sort((a,b)=>moveCost(a,hand,target)-moveCost(b,hand,target))[0];
+  }
+
+  function applyTribute(){
+    const r=state.lastRanking;if(!r)return null;const first=r[0],second=r[1],last=r[3],doubleDown=team(first)===team(second);let pairs=doubleDown?[[last,first],[r[2],second]]:[[last,first]];
+    const losingTeam=team(last),bigJokers=[0,1,2,3].filter(p=>team(p)===losingTeam).reduce((n,p)=>n+state.hands[p].filter(c=>c.rank==="BJ").length,0);
+    if(bigJokers>=2){state.starter=first;state.tributeText=`${NAMES[last]}一方双大王抗贡`;return state.tributeText;}
+    const exchanges=[];
+    for(const [from,to] of pairs){
+      const tribute=[...state.hands[from]].filter(c=>!(c.rank===state.levelRank&&c.suit==="♥")).sort((a,b)=>rankValue(b.rank)-rankValue(a.rank))[0];
+      const back=[...state.hands[to]].filter(c=>!(c.rank===state.levelRank&&c.suit==="♥")).sort((a,b)=>rankValue(a.rank)-rankValue(b.rank))[0];
+      if(tribute&&back)exchanges.push({from,to,tribute,back});
+    }
+    if(!exchanges.length)return null;
+    for(const x of exchanges){state.hands[x.from]=state.hands[x.from].filter(c=>c.id!==x.tribute.id&&c.id!==x.back.id);state.hands[x.to]=state.hands[x.to].filter(c=>c.id!==x.back.id&&c.id!==x.tribute.id);state.hands[x.from].push(x.back);state.hands[x.to].push(x.tribute);}
+    state.hands.forEach(sortHand);const highest=exchanges.sort((a,b)=>rankValue(b.tribute.rank)-rankValue(a.tribute.rank))[0];state.starter=highest.from;
+    state.tributeText=exchanges.map(x=>`${NAMES[x.from]}向${NAMES[x.to]}进贡${x.tribute.rank}`).join("，");return state.tributeText;
   }
 
   function startGame(){
     clearTimeout(state.timer); state.levelRank=LEVELS[state.levels[state.levelTeam]]; const deck=makeDeck();
     state.hands=[[],[],[],[]]; for(let i=0;i<108;i++)state.hands[i%4].push(deck[i]); state.hands.forEach(sortHand);
+    const tribute=applyTribute();
     state.selected.clear(); state.last=null; state.passes=0; state.finished=[]; state.played=[]; state.running=true;
-    state.starter=(state.starter+1)%4; state.turn=state.starter;
-    updateAll(); setMessage(`${NAMES[state.turn]}先出牌`, `本局打 ${state.levelRank}`); runTurn();
+    if(!tribute)state.starter=(state.starter+1)%4; state.turn=state.starter;
+    updateAll(); setMessage(`${NAMES[state.turn]}先出牌`, tribute||`本局打 ${state.levelRank}`);
+    if(tribute){renderControls();highlightTurn();state.timer=setTimeout(runTurn,1400);}else runTurn();
   }
   function nextActive(from){ for(let n=1;n<=4;n++){const p=(from+n)%4;if(state.hands[p].length && !state.finished.includes(p))return p;}return -1; }
   function playMove(p,cards){
@@ -164,7 +199,7 @@
   }
   function finishGame(){
     state.running=false;clearTimeout(state.timer);const first=state.finished[0],matePos=state.finished.indexOf(partner(first));const gain=matePos===1?3:matePos===2?2:1;const winTeam=team(first);state.levels[winTeam]=Math.min(12,state.levels[winTeam]+gain);state.levelTeam=winTeam;
-    localStorage.setItem("guandan-progress",JSON.stringify({levels:state.levels,levelTeam:state.levelTeam}));
+    state.lastRanking=[...state.finished];localStorage.setItem("guandan-progress",JSON.stringify({levels:state.levels,levelTeam:state.levelTeam,ranking:state.lastRanking}));
     updateHeader();const won=winTeam===0;$("#gd-result-icon").textContent=won?"胜":"负";$("#gd-result-icon").classList.toggle("lose",!won);$("#gd-result-title").textContent=won?`我方升 ${gain} 级`:`对方升 ${gain} 级`;$("#gd-result-copy").textContent=`下局由${winTeam===0?"我方":"对方"}打 ${LEVELS[state.levels[winTeam]]}`;
     $("#gd-ranking").innerHTML=state.finished.map((p,i)=>`<div class="gd-rank-item"><b>${i+1}</b>${NAMES[p]}${team(p)===0?" · 我方":""}</div>`).join("");setTimeout(()=>$("#gd-result-dialog").showModal(),350);renderControls();
   }
