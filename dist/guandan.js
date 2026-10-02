@@ -179,7 +179,7 @@
     clearTimeout(state.timer); state.levelRank=LEVELS[state.levels[state.levelTeam]]; const deck=makeDeck();
     state.hands=[[],[],[],[]]; for(let i=0;i<108;i++)state.hands[i%4].push(deck[i]); state.hands.forEach(sortHand);
     const tribute=applyTribute();
-    state.selected.clear(); state.manualGroups=[];state.flushCycle={"♠":0,"♥":0,"♣":0,"♦":0};state.last=null; state.passes=0; state.finished=[]; state.played=[]; state.running=true;
+    state.selected.clear(); state.manualGroups=[];state.flushCycle={"♠":0,"♥":0,"♣":0,"♦":0};state.last=null; state.passes=0; state.finished=[]; state.played=[]; state.running=true;const myMeta=$("#gd-player-0 .gd-me-meta small");if(myMeta)myMeta.textContent="与小舒一队";
     if(!tribute)state.starter=(state.starter+1)%4; state.turn=state.starter;
     updateAll();const detected=SUITS.filter(s=>straightFlushOptions(state.hands[0],s).length).length;setMessage(`${NAMES[state.turn]}先出牌`, tribute||(detected?`有 ${detected} 种花色可组成同花顺，点击亮起的花色预选`:`本局打 ${state.levelRank}`));if(music.enabled)startMusic().catch(()=>{});
     if(tribute){renderControls();highlightTurn();state.timer=setTimeout(runTurn,1400);}else runTurn();
@@ -189,8 +189,8 @@
     const combo=classify(cards); if(!combo || (state.last&&!beats(combo,state.last.combo)))return false;
     const ids=new Set(cards.map(c=>c.id)); state.hands[p]=state.hands[p].filter(c=>!ids.has(c.id)); state.last={player:p,cards:[...cards],combo}; state.passes=0; state.played.push(...cards); if(p===0)state.selected.clear();
     showPlay(p,cards,TYPE_NAME[combo.type]);
-    if(!state.hands[p].length && !state.finished.includes(p)){ state.finished.push(p); markFinished(p); if(state.finished.length===3){const last=[0,1,2,3].find(x=>!state.finished.includes(x));state.finished.push(last);finishGame();return true;} }
-    state.turn=nextActive(p); updateAll(); setMessage(`${NAMES[p]}：${TYPE_NAME[combo.type]}`, `${NAMES[state.turn]}出牌`); runTurn(); return true;
+    let justFinished=false;if(!state.hands[p].length && !state.finished.includes(p)){justFinished=true;state.finished.push(p); markFinished(p); if(state.finished.length===3){const last=[0,1,2,3].find(x=>!state.finished.includes(x));state.finished.push(last);finishGame();return true;} }
+    state.turn=nextActive(p); updateAll();if(p===0&&justFinished)setMessage(`你已出完 · 第 ${state.finished.indexOf(0)+1} 名`,`牌局继续，已公开对家小舒的剩余手牌`);else setMessage(`${NAMES[p]}：${TYPE_NAME[combo.type]}`, `${NAMES[state.turn]}出牌`); runTurn(); return true;
   }
   function pass(p){
     if(!state.last)return; state.passes++; showPass(p); const active=4-state.finished.length;
@@ -204,8 +204,10 @@
   }
   function runTurn(){
     clearTimeout(state.timer); if(!state.running)return;
+    if(state.turn<0||!state.hands[state.turn]?.length||state.finished.includes(state.turn))state.turn=nextActive(state.turn<0?0:state.turn);
+    if(state.turn<0)return;
     renderControls(); highlightTurn();
-    if(state.turn!==0)state.timer=setTimeout(()=>{const m=chooseAI(state.turn);m?playMove(state.turn,m.cards):pass(state.turn);},520+Math.random()*360);
+    if(state.turn!==0)state.timer=setTimeout(()=>{const player=state.turn;try{const m=chooseAI(player);m?playMove(player,m.cards):pass(player);}catch(error){const fallback=generateMoves(state.hands[player],state.last)[0];if(fallback)playMove(player,fallback.cards);else if(state.last)pass(player);}},520+Math.random()*360);
   }
   function finishGame(){
     state.running=false;clearTimeout(state.timer);const first=state.finished[0],matePos=state.finished.indexOf(partner(first));const gain=matePos===1?3:matePos===2?2:1;const winTeam=team(first);state.levels[winTeam]=Math.min(12,state.levels[winTeam]+gain);state.levelTeam=winTeam;
@@ -213,7 +215,7 @@
     updateHeader();const won=winTeam===0;$("#gd-result-icon").textContent=won?"胜":"负";$("#gd-result-icon").classList.toggle("lose",!won);$("#gd-result-title").textContent=won?`我方升 ${gain} 级`:`对方升 ${gain} 级`;$("#gd-result-copy").textContent=`下局由${winTeam===0?"我方":"对方"}打 ${LEVELS[state.levels[winTeam]]}`;
     $("#gd-ranking").innerHTML=state.finished.map((p,i)=>`<div class="gd-rank-item"><b>${i+1}</b>${NAMES[p]}${team(p)===0?" · 我方":""}</div>`).join("");setTimeout(()=>$("#gd-result-dialog").showModal(),350);renderControls();
   }
-  function markFinished(p){const el=$(`#gd-player-${p}`);if(el)el.querySelector(".gd-meta em").textContent=`第 ${state.finished.length} 名`;}
+  function markFinished(p){const el=$(`#gd-player-${p}`);if(!el)return;const label=p===0?el.querySelector(".gd-me-meta small"):el.querySelector(".gd-meta em");if(label)label.textContent=`第 ${state.finished.length} 名 · 观战中`;}
   function cardHTML(c,small=false){
     const joker=c.rank==="SJ"||c.rank==="BJ",red=c.suit==="♥"||c.suit==="♦"||c.rank==="BJ",label=c.rank==="SJ"?"小王":c.rank==="BJ"?"大王":c.rank;
     const wild=c.rank===state.levelRank&&c.suit==="♥";
@@ -233,7 +235,7 @@
     const blocks=$$("#gd-hand .gd-hand-block"),available=Math.max(120,el.clientWidth-24),total=blocks.reduce((n,b)=>n+(+b.dataset.width||cardW),0),over=blocks.length>1?Math.min(0,(available-total)/(blocks.length-1)):0;blocks.forEach((node,i)=>{node.style.setProperty("--stack-overlap",`${Math.max(-28,over)}px`);node.style.zIndex=i+1;});
     $$("#gd-hand .gd-card").forEach(node=>node.classList.toggle("selected",state.selected.has(+node.dataset.id)));
   }
-  function renderBacks(){for(let p=1;p<4;p++){const shown=state.running?state.hands[p].length:27,n=Math.min(7,Math.ceil(shown/4));$(`#gd-backs-${p}`).innerHTML=Array.from({length:n},()=>'<i class="gd-back"></i>').join("");$(`#gd-count-${p}`).textContent=shown;}}
+  function renderBacks(){for(let p=1;p<4;p++){const shown=state.running?state.hands[p].length:27,el=$(`#gd-backs-${p}`);if(p===2&&state.running&&state.hands[0].length===0){el.classList.add("revealed");el.innerHTML=`<div class="gd-revealed-hand">${sortHand([...state.hands[p]]).map(cardHTML).join("")}</div>`;}else{el.classList.remove("revealed");const n=Math.min(7,Math.ceil(shown/4));el.innerHTML=Array.from({length:n},()=>'<i class="gd-back"></i>').join("");}$(`#gd-count-${p}`).textContent=shown;}}
   function renderCounter(){const all=state.hands.flat(),order=["BJ","SJ",state.levelRank,...RANKS.slice().reverse().filter(r=>r!==state.levelRank)];const count=(r,s)=>state.running?all.filter(c=>c.rank===r&&(!s||c.suit===s)).length:(r==="SJ"||r==="BJ"?2:s?2:8);$("#gd-counter-grid").innerHTML=order.map(r=>{const n=count(r),label=r==="BJ"?"大王":r==="SJ"?"小王":r;if(r==="SJ"||r==="BJ")return `<div class="gd-counter-cell joker-count${n?"":" zero"}"><b>${label}</b><strong>${n}</strong></div>`;return `<div class="gd-counter-cell${n?"":" zero"}"><b>${label}</b><div class="gd-suit-counts">${SUITS.map(s=>`<span class="${s==="♥"||s==="♦"?"red":""}">${s}${count(r,s)}</span>`).join("")}</div></div>`;}).join("");}
   function updateHeader(){$("#gd-level-us").textContent=LEVELS[state.levels[0]];$("#gd-level-them").textContent=LEVELS[state.levels[1]];$("#gd-level-now").textContent=`本局打 ${state.levelRank}`;}
   function updateAll(){renderHand();renderBacks();renderCounter();updateHeader();}
@@ -243,6 +245,7 @@
   function highlightTurn(){$$(".gd-player,.gd-me").forEach(x=>x.classList.remove("turn"));const el=$(`#gd-player-${state.turn}`);if(el)el.classList.add("turn");}
   function renderControls(){
     renderFlushTools();const el=$("#gd-actions");if(!state.running){el.innerHTML='<button class="gd-btn primary" id="gd-start">开始游戏</button>';$("#gd-start").onclick=startGame;return;}const arrangeLabel=state.selected.size>1?`收为一组 (${state.selected.size})`:"收为一组";
+    if(!state.hands[0].length){el.innerHTML='<button class="gd-btn spectator" disabled>观战中 · 电脑继续出牌</button>';return;}
     if(state.turn!==0){el.innerHTML=`<button class="gd-btn arrange" id="gd-arrange-btn">${arrangeLabel}</button><button class="gd-btn" disabled>电脑思考中</button>`;$("#gd-arrange-btn").onclick=arrangeHand;return;}
     el.innerHTML=`<button class="gd-btn arrange" id="gd-arrange-btn">${arrangeLabel}</button><button class="gd-btn" id="gd-hint-btn">提示</button>${state.last?'<button class="gd-btn" id="gd-pass-btn">不出</button>':""}<button class="gd-btn primary" id="gd-play-btn">出牌</button>`;
     $("#gd-arrange-btn").onclick=arrangeHand;$("#gd-hint-btn").onclick=hintMove;if($("#gd-pass-btn"))$("#gd-pass-btn").onclick=()=>pass(0);$("#gd-play-btn").onclick=humanPlay;
