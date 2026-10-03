@@ -8,6 +8,8 @@
   const LEVELS = ["2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K", "A"];
   const TYPE_NAME = {single:"单张",pair:"对子",triple:"三张",triple_pair:"三带二",straight:"顺子",pair_run:"三连对",triple_run:"钢板",bomb:"炸弹",straight_flush:"同花顺",joker_bomb:"四王炸"};
   const state = {hands:[[],[],[],[]], selected:new Set(), turn:0, last:null, passes:0, finished:[], played:[], playHistory:[], passSignals:[[],[],[],[]], tributeSession:null, running:false, timer:0, levels:[0,0], levelTeam:0, levelRank:"2", starter:0, lastRanking:null, tributeText:"", manualGroups:[], flushCycle:{"♠":0,"♥":0,"♣":0,"♦":0}};
+  const DEFAULT_AI_WEIGHTS={turnLate:48,turnNormal:31,futureShort:34,futureLong:12,bombNormal:112,bombDanger:10,bombPower:24,bombPlanGain:22,controlDanger:-48,controlEarly:15,controlNormal:-10,structure:1,flushLink:2,randomTolerance:4.5,randomTemperature:3.2};
+  const AI_WEIGHTS={...DEFAULT_AI_WEIGHTS,...Object.fromEntries(Object.entries(window.GUANDAN_AI_WEIGHTS||{}).filter(([,v])=>Number.isFinite(v)))};
   const saved = JSON.parse(localStorage.getItem("guandan-progress") || "null");
   if (saved && Array.isArray(saved.levels)) { state.levels = saved.levels.map(v => Math.max(0, Math.min(12, v|0))); state.levelTeam = saved.levelTeam === 1 ? 1 : 0; if(Array.isArray(saved.ranking)&&saved.ranking.length===4)state.lastRanking=saved.ranking; }
 
@@ -92,21 +94,29 @@
     return out;
   }
   function uniqueMoves(moves){ const seen=new Set(); return moves.filter(m=>{const key=m.map(c=>c.id).sort((a,b)=>a-b).join("-");if(seen.has(key))return false;seen.add(key);return true;}); }
+  function cardLinkScore(card,hand){
+    if(card.rank==="SJ"||card.rank==="BJ")return 0;const value=naturalValue(card.rank);
+    const suited=new Set(hand.filter(c=>c.suit===card.suit&&c.rank!=="SJ"&&c.rank!=="BJ").map(c=>naturalValue(c.rank)));let score=0;
+    for(let start=Math.max(2,value-4);start<=Math.min(10,value);start++){let linked=0;for(let v=start;v<start+5;v++)if(suited.has(v))linked++;if(linked>=3)score+=linked===5?8:linked===4?3:1;}
+    if(suited.has(14)&&[2,3,4,5,14].includes(value)){const low=[2,3,4,5,14].filter(v=>suited.has(v)).length;if(low>=3)score+=low===5?8:low===4?3:1;}
+    return score;
+  }
+  function preferLoose(cards,hand){return [...cards].sort((a,b)=>cardLinkScore(a,hand)-cardLinkScore(b,hand)||SUITS.indexOf(a.suit)-SUITS.indexOf(b.suit));}
   function generateMoves(hand, target=null){
     const g=groups(hand), moves=[];
     for(const [,cs] of g){
-      moves.push([cs[0]]); if(cs.length>=2)moves.push(cs.slice(0,2)); if(cs.length>=3)moves.push(cs.slice(0,3));
+      const loose=preferLoose(cs,hand),linked=[...loose].reverse(),keepVariants=!!target||hand.length<=16;moves.push([loose[0]]);if(keepVariants&&linked[0].id!==loose[0].id)moves.push([linked[0]]);if(cs.length>=2){moves.push(loose.slice(0,2));if(keepVariants)moves.push(linked.slice(0,2));}if(cs.length>=3){moves.push(loose.slice(0,3));if(keepVariants)moves.push(linked.slice(0,3));}
       if(cs.length>=4) for(let n=4;n<=cs.length;n++)moves.push(cs.slice(0,n));
     }
     const triples=[...g.values()].filter(x=>x.length>=3), pairs=[...g.values()].filter(x=>x.length>=2);
-    for(const t of triples) for(const p of pairs) if(t[0].rank!==p[0].rank)moves.push([...t.slice(0,3),...p.slice(0,2)]);
+    for(const t of triples) for(const p of pairs) if(t[0].rank!==p[0].rank)moves.push([...preferLoose(t,hand).slice(0,3),...preferLoose(p,hand).slice(0,2)]);
     const naturals=[...g.entries()].filter(([r])=>r!=="SJ"&&r!=="BJ").sort((a,b)=>naturalValue(a[0])-naturalValue(b[0]));
     const seqRanks=[...new Set(naturals.map(x=>naturalValue(x[0])))];
-    for(let i=0;i<=seqRanks.length-5;i++){const vals=seqRanks.slice(i,i+5);if(consecutive(vals)){const es=vals.map(v=>naturals.find(x=>naturalValue(x[0])===v));moves.push(es.map(e=>e[1][0]));for(const s of SUITS)if(es.every(e=>e[1].some(c=>c.suit===s)))moves.push(es.map(e=>e[1].find(c=>c.suit===s)));}}
-    const lowAce=[2,3,4,5,14].map(v=>naturals.find(x=>naturalValue(x[0])===v)); if(lowAce.every(Boolean)){moves.push(lowAce.map(e=>e[1][0]));for(const s of SUITS)if(lowAce.every(e=>e[1].some(c=>c.suit===s)))moves.push(lowAce.map(e=>e[1].find(c=>c.suit===s)));}
+    for(let i=0;i<=seqRanks.length-5;i++){const vals=seqRanks.slice(i,i+5);if(consecutive(vals)){const es=vals.map(v=>naturals.find(x=>naturalValue(x[0])===v));moves.push(es.map(e=>preferLoose(e[1],hand)[0]));for(const s of SUITS)if(es.every(e=>e[1].some(c=>c.suit===s)))moves.push(es.map(e=>e[1].find(c=>c.suit===s)));}}
+    const lowAce=[2,3,4,5,14].map(v=>naturals.find(x=>naturalValue(x[0])===v)); if(lowAce.every(Boolean)){moves.push(lowAce.map(e=>preferLoose(e[1],hand)[0]));for(const s of SUITS)if(lowAce.every(e=>e[1].some(c=>c.suit===s)))moves.push(lowAce.map(e=>e[1].find(c=>c.suit===s)));}
     for(let i=0;i<naturals.length;i++){
-      const p3=naturals.slice(i,i+3); if(p3.length===3&&p3.every(e=>e[1].length>=2)&&consecutive(p3.map(e=>naturalValue(e[0]))))moves.push(p3.flatMap(e=>e[1].slice(0,2)));
-      const t2=naturals.slice(i,i+2); if(t2.length===2&&t2.every(e=>e[1].length>=3)&&consecutive(t2.map(e=>naturalValue(e[0]))))moves.push(t2.flatMap(e=>e[1].slice(0,3)));
+      const p3=naturals.slice(i,i+3); if(p3.length===3&&p3.every(e=>e[1].length>=2)&&consecutive(p3.map(e=>naturalValue(e[0]))))moves.push(p3.flatMap(e=>preferLoose(e[1],hand).slice(0,2)));
+      const t2=naturals.slice(i,i+2); if(t2.length===2&&t2.every(e=>e[1].length>=3)&&consecutive(t2.map(e=>naturalValue(e[0]))))moves.push(t2.flatMap(e=>preferLoose(e[1],hand).slice(0,3)));
     }
     const wilds=hand.filter(c=>c.rank===state.levelRank&&c.suit==="♥"), plain=hand.filter(c=>!wilds.some(w=>w.id===c.id)), plainGroups=groups(plain);
     if(wilds.length){
@@ -119,27 +129,36 @@
       for(const vals of windows){const chosen=[],missing=[];for(const v of vals){const e=[...plainGroups.entries()].find(([r])=>naturalValue(r)===v);e?chosen.push(e[1][0]):missing.push(v);}if(missing.length&&missing.length<=wilds.length)moves.push([...chosen,...wilds.slice(0,missing.length)]);for(const suit of SUITS){const suited=[],suitMissing=[];for(const v of vals){const card=plain.find(c=>naturalValue(c.rank)===v&&c.suit===suit);card?suited.push(card):suitMissing.push(v);}if(suitMissing.length&&suitMissing.length<=wilds.length)moves.push([...suited,...wilds.slice(0,suitMissing.length)]);}}
       const rankEntries=[...plainGroups.values()];
       for(const t of rankEntries)for(const p of rankEntries){if(t[0].rank===p[0].rank)continue;for(let useT=0;useT<=wilds.length;useT++){const useP=wilds.length-useT;if(t.length+useT>=3&&p.length+useP>=2&&useT<=3&&useP<=2)moves.push([...t.slice(0,3-useT),...p.slice(0,2-useP),...wilds]);}}
+      const addWildRun=(need,length)=>{for(let low=2;low<=14-length+1;low++){const vals=Array.from({length},(_,i)=>low+i),picked=[];let missing=0;for(const v of vals){const entry=[...plainGroups.entries()].find(([r])=>naturalValue(r)===v),take=Math.min(need,entry?.[1].length||0);if(entry)picked.push(...entry[1].slice(0,take));missing+=need-take;}if(missing>0&&missing<=wilds.length)moves.push([...picked,...wilds.slice(0,missing)]);}};
+      addWildRun(2,3);addWildRun(3,2);
     }
     const jokers=hand.filter(c=>c.rank==="SJ"||c.rank==="BJ"); if(jokers.length===4)moves.push(jokers);
     const valid=uniqueMoves(moves).map(cards=>({cards,combo:classify(cards)})).filter(x=>x.combo);
     return target ? valid.filter(x=>beats(x.combo,target.combo)) : valid;
   }
   function removeMove(hand,move){const ids=new Set(move.cards.map(c=>c.id));return hand.filter(c=>!ids.has(c.id));}
+  function bombBreakPenalty(move,hand){
+    const handGroups=groups(hand);let penalty=0;
+    for(const [rank,cards] of handGroups){const used=move.cards.filter(c=>c.rank===rank).length;if(cards.length>=4&&used>0&&used<cards.length)penalty+=34+(cards.length-used)*7;}
+    const jokers=hand.filter(c=>c.rank==="SJ"||c.rank==="BJ"),usedJokers=move.cards.filter(c=>c.rank==="SJ"||c.rank==="BJ").length;if(jokers.length===4&&usedJokers>0&&usedJokers<4)penalty+=58;
+    return penalty;
+  }
   function moveShape(move){const bonus={straight:25,pair_run:31,triple_run:34,triple_pair:23,triple:8,pair:5,single:0,bomb:18,straight_flush:30,joker_bomb:35};return move.cards.length*18+(bonus[move.combo.type]||0)-move.cards.filter(c=>c.rank===state.levelRank&&c.suit==="♥").length*13;}
   function quickTurns(hand){
     if(!hand.length)return 0;const count=new Map([...groups(hand)].map(([r,c])=>[r,c.length]));let turns=0;
     if((count.get("SJ")||0)+(count.get("BJ")||0)===4){turns++;count.set("SJ",0);count.set("BJ",0);}for(const [rank,n] of count)if(n>=4){turns++;count.set(rank,0);}
-    const takeRuns=(need,length)=>{let found=true;while(found){found=false;const vals=RANKS.map(naturalValue);for(let i=0;i<=vals.length-length;i++){const run=vals.slice(i,i+length),ranks=run.map(v=>RANKS.find(r=>naturalValue(r)===v));if(ranks.every(r=>(count.get(r)||0)===need)){ranks.forEach(r=>count.set(r,0));turns++;found=true;break;}}}};
+    const takeRuns=(need,length)=>{let found=true;while(found){found=false;const vals=RANKS.map(naturalValue);for(let i=0;i<=vals.length-length;i++){const run=vals.slice(i,i+length),ranks=run.map(v=>RANKS.find(r=>naturalValue(r)===v));if(ranks.every(r=>(count.get(r)||0)>=need)){ranks.forEach(r=>count.set(r,count.get(r)-need));turns++;found=true;break;}}}};
     takeRuns(3,2);takeRuns(2,3);takeRuns(1,5);const triples=[...count].filter(([,n])=>n===3).map(([r])=>r),pairs=[...count].filter(([,n])=>n===2).map(([r])=>r);while(triples.length&&pairs.length){count.set(triples.pop(),0);count.set(pairs.pop(),0);turns++;}for(const n of count.values())if(n>0)turns++;return turns;
   }
-  function planTurns(hand,memo=new Map(),depth=0){
-    if(!hand.length)return 0;const key=`${depth}|${hand.map(c=>c.id).sort((a,b)=>a-b).join(".")}`;if(memo.has(key))return memo.get(key);if(depth>=2||hand.length>10){const q=quickTurns(hand);memo.set(key,q);return q;}const moves=generateMoves(hand);if(moves.some(m=>m.cards.length===hand.length)){memo.set(key,1);return 1;}
-    const candidates=moves.sort((a,b)=>moveShape(b)-moveShape(a)).slice(0,hand.length<=7?20:12);let best=99;for(const move of candidates)best=Math.min(best,1+planTurns(removeMove(hand,move),memo,depth+1));memo.set(key,best);return best;
+  function planTurns(hand,memo=new Map(),depth=0,budget=null){
+    if(!hand.length)return 0;const maxDepth=budget??(hand.length<=16?6:hand.length<=20?4:2),key=`${maxDepth}|${depth}|${hand.map(c=>c.id).sort((a,b)=>a-b).join(".")}`;if(memo.has(key))return memo.get(key);if(depth>=maxDepth){const q=quickTurns(hand);memo.set(key,q);return q;}let moves=generateMoves(hand);if(moves.some(m=>m.cards.length===hand.length)){memo.set(key,1);return 1;}
+    const limit=hand.length<=12?28:hand.length<=16?22:14,candidates=moves.sort((a,b)=>moveShape(b)-bombBreakPenalty(b,hand)-moveShape(a)+bombBreakPenalty(a,hand)).slice(0,limit);let best=99;for(const move of candidates){const estimate=1+planTurns(removeMove(hand,move),memo,depth+1,maxDepth);if(estimate<best)best=estimate;if(best<=2)break;}memo.set(key,best);return best;
   }
-  function structureDamage(move,hand){
-    let cost=0;const handGroups=groups(hand);for(const [rank,cards] of handGroups){const used=move.cards.filter(c=>c.rank===rank).length;if(!used||used===cards.length)continue;if(cards.length>=4)cost+=62;else if(cards.length===3)cost+=16;else if(cards.length===2)cost+=9;}
-    cost+=move.cards.filter(c=>c.rank===state.levelRank&&c.suit==="♥").length*20;return cost;
+  function structureDamage(move,hand,weights=AI_WEIGHTS){
+    let cost=0;const handGroups=groups(hand);for(const [rank,cards] of handGroups){const used=move.cards.filter(c=>c.rank===rank).length;if(!used||used===cards.length)continue;if(cards.length===3)cost+=16;else if(cards.length===2)cost+=9;}
+    cost+=bombBreakPenalty(move,hand);cost+=move.cards.filter(c=>c.rank===state.levelRank&&c.suit==="♥").length*20;cost+=move.cards.reduce((n,c)=>n+cardLinkScore(c,hand)*weights.flushLink,0);return cost;
   }
+  function powerProfile(hand){const gs=groups(hand),rankBombs=[...gs.values()].filter(cs=>cs.length>=4),jokers=hand.filter(c=>c.rank==="SJ"||c.rank==="BJ"),jokerBomb=jokers.length===4;return{bombs:rankBombs.length+(jokerBomb?1:0),cards:rankBombs.reduce((n,cs)=>n+cs.length,0)+(jokerBomb?4:0),looseJokers:jokerBomb?0:jokers.length};}
   function unseenRankCount(rank,p){const total=rank==="SJ"||rank==="BJ"?2:8,played=state.played.filter(c=>c.rank===rank).length,own=state.hands[p].filter(c=>c.rank===rank).length;return Math.max(0,total-played-own);}
   function likelyControl(move,p){
     const c=move.combo;if(c.type==="joker_bomb")return true;if(c.bomb)return false;const need=c.type==="pair"?2:c.type==="triple"||c.type==="triple_pair"?3:c.type==="single"?1:0;if(!need)return false;
@@ -147,25 +166,31 @@
     const opponents=[0,1,2,3].filter(x=>team(x)!==team(p)&&state.hands[x].length);return opponents.every(x=>state.passSignals[x].some(s=>s.type===c.type&&s.size===c.size&&s.value<=c.value))||allRanks.every(r=>unseenRankCount(r,p)<need);
   }
   function moveCost(move,hand,target,p=0,context={}){
-    const c=move.combo,remain=removeMove(hand,move),memo=context.memo||new Map(),early=hand.length>14;if(!remain.length)return-100000;const turns=planTurns(remain,memo);let score=turns*(hand.length<=10?48:31)-move.cards.length*(early?2:4);
-    score+=(c.main||c.value)*(target?(early?1.35:.9):(early?1.7:.65))+structureDamage(move,hand);score+=move.cards.filter(x=>rankValue(x.rank)>=15).length*(early?18:target?10:13);
-    if(c.bomb)score+=context.closesSoon?-24:context.danger?38:120;const controls=likelyControl(move,p);if(controls)score+=context.danger?-35:early?15:-10;if(turns<=1&&controls)score-=70;
+    const w=context.weights||AI_WEIGHTS,c=move.combo,remain=removeMove(hand,move),memo=context.memo||new Map(),early=hand.length>14;if(!remain.length)return-100000;const turns=context.fast?quickTurns(remain):context.trainingDepth===null||context.trainingDepth===undefined?planTurns(remain,memo):planTurns(remain,memo,0,context.trainingDepth);let score=turns*(hand.length<=10?w.turnLate:w.turnNormal)-move.cards.length*(early?2:4);
+    score+=(c.main||c.value)*(target?(early?1.35:.9):(early?1.7:.65))+structureDamage(move,hand,w)*w.structure;score+=move.cards.filter(x=>rankValue(x.rank)>=15).length*(early?18:target?10:13);
+    const power=context.power||powerProfile(hand),planGain=(context.baseTurns||turns+1)-turns,powerHand=power.bombs>=2&&power.cards>=Math.ceil(hand.length*.65);
+    if(c.bomb)score+=context.closesSoon?-30:context.danger?w.bombDanger:!target&&powerHand?Math.max(45,w.bombPower):planGain>=2?35:w.bombNormal;const controls=likelyControl(move,p);if(controls)score+=context.danger?w.controlDanger:early?w.controlEarly:w.controlNormal;if(turns<=1&&controls)score-=70;
+    if(!target&&powerHand&&c.bomb)score-=Math.min(35,power.cards*2);if(target&&c.bomb&&planGain>0)score-=planGain*w.bombPlanGain;
     if(!target&&early&&c.type==="single"&&groups(hand).get(move.cards[0].rank)?.length===1)score-=18;if(!target&&early&&c.type==="pair"&&groups(hand).get(move.cards[0].rank)?.length===2)score-=14;
-    if(!target&&c.type==="single"&&context.enemyOne)score+=likelyControl(move,p)?10:160;if(!target&&c.type==="pair"&&context.enemyTwo)score+=95;
+    if(!target&&c.type==="single"&&context.enemyOne)score+=likelyControl(move,p)?10:190;if(!target&&c.type==="pair"&&context.enemyTwo)score+=120;
+    if(!target&&context.mateNext&&context.mateLow){const mateCards=state.hands[partner(p)].length;if(c.type==="single"&&mateCards===1)score+=(c.main||c.value)*-4;if(c.type==="pair"&&mateCards===2)score+=(c.main||c.value)*-3;}
     return score;
   }
-  function chooseAI(p){
+  function chooseAI(p,weights=AI_WEIGHTS){
     const hand=state.hands[p],target=state.last,moves=generateMoves(hand,target);if(!moves.length)return null;const finish=moves.find(m=>m.cards.length===hand.length);if(finish)return finish;
-    const activeEnemies=[0,1,2,3].filter(x=>team(x)!==team(p)&&state.hands[x].length),enemyMin=Math.min(...activeEnemies.map(x=>state.hands[x].length)),next=nextActive(p),nextIsEnemy=next>=0&&team(next)!==team(p),enemyOne=nextIsEnemy&&state.hands[next].length===1,enemyTwo=nextIsEnemy&&state.hands[next].length===2;
+    const activeEnemies=[0,1,2,3].filter(x=>team(x)!==team(p)&&state.hands[x].length),enemyMin=Math.min(...activeEnemies.map(x=>state.hands[x].length)),next=nextActive(p),nextIsEnemy=next>=0&&team(next)!==team(p),mateNext=next===partner(p),mateLow=state.hands[partner(p)].length<=2,enemyOne=nextIsEnemy&&state.hands[next].length===1,enemyTwo=nextIsEnemy&&state.hands[next].length===2;
     if(target&&team(target.player)===team(p)){
       if(enemyMin<=1&&nextIsEnemy){const block=moves.filter(m=>!m.combo.bomb&&likelyControl(m,p)).sort((a,b)=>(a.combo.main||a.combo.value)-(b.combo.main||b.combo.value))[0];if(block)return block;}
+      if(hand.length<=10&&state.hands[target.player].length>6){const memo=new Map(),takeover=moves.filter(m=>!m.combo.bomb&&likelyControl(m,p)&&planTurns(removeMove(hand,m),memo)<=1).sort((a,b)=>structureDamage(a,hand)-structureDamage(b,hand))[0];if(takeover)return takeover;}
       return null;
     }
-    if(!target&&state.hands[partner(p)].length<=2){const need=state.hands[partner(p)].length,feed=moves.filter(m=>m.cards.length===need&&!m.combo.bomb).sort((a,b)=>(a.combo.main||a.combo.value)-(b.combo.main||b.combo.value))[0];if(feed)return feed;}
+    if(!target&&state.hands[partner(p)].length<=2){const mateCards=state.hands[partner(p)],mateCombo=classify(mateCards);if(mateCombo){const feed=moves.filter(m=>!m.combo.bomb&&m.combo.type===mateCombo.type&&m.combo.size===mateCombo.size&&beats(mateCombo,m.combo)).sort((a,b)=>(a.combo.main||a.combo.value)-(b.combo.main||b.combo.value))[0];if(feed)return feed;}}
     let pool=[...moves];if(!target&&enemyOne){const safe=pool.filter(m=>m.combo.type!=="single");if(safe.length)pool=safe;}if(!target&&enemyTwo){const safe=pool.filter(m=>m.combo.type!=="pair");if(safe.length)pool=safe;}
-    const danger=enemyMin<=2||(target&&team(target.player)!==team(p)&&state.hands[target.player].length<=3),memo=new Map();if(!danger){const nonBomb=pool.filter(m=>!m.combo.bomb);if(nonBomb.length)pool=nonBomb;}
-    const scored=pool.map(move=>{const remain=removeMove(hand,move),closesSoon=planTurns(remain,memo)<=1;return{move,closesSoon,cost:moveCost(move,hand,target,p,{danger,closesSoon,enemyOne,enemyTwo,memo})};});scored.sort((a,b)=>a.cost-b.cost);const best=scored[0];
-    if(target&&!danger&&team(target.player)!==team(p)&&state.hands[target.player].length>7&&!best.closesSoon){const spendsControl=best.move.cards.some(c=>rankValue(c.rank)>=15),damage=structureDamage(best.move,hand);if(best.move.combo.bomb||damage>=50||(hand.length>12&&spendsControl))return null;}
+    const power=powerProfile(hand),bombDominant=power.bombs>=2&&power.cards>=Math.ceil(hand.length*.65);if(!target&&hand.length>12&&!bombDominant){const disciplined=pool.filter(m=>!m.combo.bomb&&!(m.combo.type==="single"&&(m.combo.main||m.combo.value)>=14));if(disciplined.length)pool=disciplined;}
+    const danger=enemyMin<=3||(target&&team(target.player)!==team(p)&&state.hands[target.player].length<=5),memo=new Map(),fast=!!weights.trainingFast,trainingDepth=Number.isInteger(weights.trainingDepth)?weights.trainingDepth:null,estimate=cards=>fast?quickTurns(cards):trainingDepth===null?planTurns(cards,memo):planTurns(cards,memo,0,trainingDepth),baseTurns=fast||hand.length>18&&trainingDepth===null?quickTurns(hand):estimate(hand);
+    const scored=pool.map(move=>{const remain=removeMove(hand,move),futureTurns=estimate(remain),closesSoon=futureTurns<=1;return{move,closesSoon,futureTurns,cost:moveCost(move,hand,target,p,{danger,closesSoon,enemyOne,enemyTwo,mateNext,mateLow,baseTurns,power,weights,fast:fast||trainingDepth===0,trainingDepth,memo})+futureTurns*(hand.length<=16?weights.futureShort:weights.futureLong)};});scored.sort((a,b)=>a.cost-b.cost||a.futureTurns-b.futureTurns||structureDamage(a.move,hand,weights)-structureDamage(b.move,hand,weights)||(a.move.combo.main||a.move.combo.value)-(b.move.combo.main||b.move.combo.value));let best=scored[0];
+    if(!danger&&hand.length>8){const tolerance=power.bombs>=2?weights.randomTolerance*3.1:hand.length>18?weights.randomTolerance*1.55:weights.randomTolerance,near=scored.filter(x=>x.cost<=best.cost+tolerance).slice(0,5);if(near.length>1){const temperature=power.bombs>=2?weights.randomTemperature*1.7:weights.randomTemperature,drawWeights=near.map(x=>Math.exp(-(x.cost-best.cost)/temperature)),total=drawWeights.reduce((a,b)=>a+b,0);let roll=Math.random()*total;for(let i=0;i<near.length;i++){roll-=drawWeights[i];if(roll<=0){best=near[i];break;}}}}
+    if(target&&!danger&&team(target.player)!==team(p)&&state.hands[target.player].length>7&&!best.closesSoon){const spendsControl=best.move.cards.some(c=>rankValue(c.rank)>=15),damage=structureDamage(best.move,hand),powerHand=power.bombs>=2&&power.cards>=Math.ceil(hand.length*.65),planGain=baseTurns-best.futureTurns,targetHigh=(target.combo.main||target.combo.value)>=14;if(best.move.combo.bomb&&!powerHand&&planGain<2||damage>=50||hand.length>12&&spendsControl&&!targetHigh&&planGain<1)return null;}
     return best.move;
   }
 
@@ -180,7 +205,7 @@
   }
 
   function legalReturnCards(hand){return hand.filter(c=>naturalValue(c.rank)<=10&&c.rank!=="SJ"&&c.rank!=="BJ"&&!(c.rank===state.levelRank&&c.suit==="♥"));}
-  function chooseAutoReturn(hand){const sizes=groups(hand);return [...legalReturnCards(hand)].sort((a,b)=>(sizes.get(a.rank)?.length||0)-(sizes.get(b.rank)?.length||0)||naturalValue(a.rank)-naturalValue(b.rank))[0];}
+  function chooseAutoReturn(hand){const sizes=groups(hand);return [...legalReturnCards(hand)].sort((a,b)=>{const cost=c=>{const count=sizes.get(c.rank)?.length||0,bomb=count>=4?100:0,set=count===3?24:count===2?12:0,wild=c.rank===state.levelRank&&c.suit==="♥"?200:0;return bomb+set+wild+cardLinkScore(c,hand)*7+naturalValue(c.rank)*.1;};return cost(a)-cost(b)||naturalValue(a.rank)-naturalValue(b.rank);})[0];}
   function prepareTributeSession(result){const session={result,kind:null,index:-1};if(result.anti)return session;const index=result.exchanges.findIndex(x=>x.from===0||x.to===0);if(index<0)return session;const x=result.exchanges[index];session.index=index;if(x.from===0){if(x.back){state.hands[0]=state.hands[0].filter(c=>c.id!==x.back.id);state.hands[x.to].push(x.back);}state.hands[x.to]=state.hands[x.to].filter(c=>c.id!==x.tribute.id);state.hands[0].push(x.tribute);x.back=null;session.kind="tribute";}else{if(x.back){state.hands[x.from]=state.hands[x.from].filter(c=>c.id!==x.back.id);state.hands[0].push(x.back);}x.back=null;session.kind="back";}state.hands.forEach(sortHand);return session;}
   function renderTributeTable(){const session=state.tributeSession;if(!session)return;for(let p=0;p<4;p++)$(`#gd-played-${p}`).innerHTML="";const result=session.result;if(result.anti){setMessage("抗贡成功",`${result.text}，由${NAMES[result.starter]}先出牌`);return;}result.exchanges.forEach((x,i)=>{const waitingTribute=session.kind==="tribute"&&session.index===i,waitingBack=session.kind==="back"&&session.index===i;$(`#gd-played-${x.from}`).insertAdjacentHTML("beforeend",`<div class="gd-play-record tribute-record">${waitingTribute?'<span class="gd-pass">待选贡牌</span>':cardHTML(x.tribute)}<span class="gd-play-label">${NAMES[x.from]} → ${NAMES[x.to]} · 进贡</span></div>`);$(`#gd-played-${x.to}`).insertAdjacentHTML("beforeend",`<div class="gd-play-record tribute-record">${waitingBack?'<span class="gd-pass">待选还牌</span>':x.back?cardHTML(x.back):'<span class="gd-pass">待还牌</span>'}<span class="gd-play-label">${NAMES[x.to]} → ${NAMES[x.from]} · 还贡</span></div>`);});const prompt=session.kind==="tribute"?"请先理牌，再选择一张最大的合法贡牌":session.kind==="back"?"请先理牌，再选择一张自然点数不超过 10 的牌":"贡还完成，请确认开始本局";setMessage("进贡与还贡",prompt);}
   function confirmTributeChoice(){const session=state.tributeSession;if(!session?.kind)return;const chosen=state.hands[0].filter(c=>state.selected.has(c.id));if(chosen.length!==1){$("#gd-hint").textContent="请选择正好 1 张牌";return;}const card=chosen[0],x=session.result.exchanges[session.index];if(session.kind==="tribute"){const eligible=state.hands[0].filter(c=>!(c.rank===state.levelRank&&c.suit==="♥")),max=Math.max(...eligible.map(c=>rankValue(c.rank)));if(rankValue(card.rank)!==max||card.rank===state.levelRank&&card.suit==="♥"){$("#gd-hint").textContent="进贡必须选择手中最大的非红桃级牌";return;}state.hands[0]=state.hands[0].filter(c=>c.id!==card.id);state.hands[x.to].push(card);x.tribute=card;const back=chooseAutoReturn(state.hands[x.to]);if(back){state.hands[x.to]=state.hands[x.to].filter(c=>c.id!==back.id);state.hands[0].push(back);x.back=back;}}else{if(!legalReturnCards([card]).length){$("#gd-hint").textContent="还贡只能选择自然点数不超过 10 的非红桃级牌";return;}state.hands[0]=state.hands[0].filter(c=>c.id!==card.id);state.hands[x.from].push(card);x.back=card;}state.selected.clear();state.hands.forEach(sortHand);session.kind=null;state.tributeText=session.result.exchanges.map(e=>`${NAMES[e.from]}进贡${e.tribute.rank}，${NAMES[e.to]}还${e.back?.rank||"牌"}`).join("；");updateAll();renderTributeTable();renderControls();}
@@ -257,14 +282,14 @@
   function highlightTurn(){$$(".gd-player,.gd-me").forEach(x=>x.classList.remove("turn"));const el=$(`#gd-player-${state.turn}`);if(el)el.classList.add("turn");}
   function renderControls(){
     const el=$("#gd-actions");if(!state.running){renderFlushTools();el.innerHTML='<button class="gd-btn primary" id="gd-start">开始游戏</button>';$("#gd-start").onclick=startGame;return;}const arrangeLabel=state.selected.size>1?`收为一组 (${state.selected.size})`:"收为一组",cancel=state.selected.size?'<button class="gd-btn cancel" id="gd-clear-btn">取消预选</button>':"";
-    if(state.tributeSession){$("#gd-flush-tools").innerHTML='<span>贡还阶段 · 可先理牌</span>';const kind=state.tributeSession.kind;if(kind){el.innerHTML=`<button class="gd-btn arrange" id="gd-arrange-btn">${arrangeLabel}</button>${cancel}<button class="gd-btn primary" id="gd-confirm-tribute">${kind==="tribute"?"确认进贡":"确认还贡"}</button>`;$("#gd-arrange-btn").onclick=arrangeHand;if($("#gd-clear-btn"))$("#gd-clear-btn").onclick=clearSelection;$("#gd-confirm-tribute").onclick=confirmTributeChoice;}else{el.innerHTML='<button class="gd-btn primary" id="gd-finish-tribute">贡还完成 · 开始本局</button>';$("#gd-finish-tribute").onclick=finishTributePhase;}return;}
+    if(state.tributeSession){renderFlushTools("贡还 · 同花顺");const kind=state.tributeSession.kind;if(kind){el.innerHTML=`<button class="gd-btn arrange" id="gd-arrange-btn">${arrangeLabel}</button>${cancel}<button class="gd-btn primary" id="gd-confirm-tribute">${kind==="tribute"?"确认进贡":"确认还贡"}</button>`;$("#gd-arrange-btn").onclick=arrangeHand;if($("#gd-clear-btn"))$("#gd-clear-btn").onclick=clearSelection;$("#gd-confirm-tribute").onclick=confirmTributeChoice;}else{el.innerHTML='<button class="gd-btn primary" id="gd-finish-tribute">贡还完成 · 开始本局</button>';$("#gd-finish-tribute").onclick=finishTributePhase;}return;}
     renderFlushTools();
     if(!state.hands[0].length){el.innerHTML='<button class="gd-btn spectator" disabled>观战中 · 电脑继续出牌</button>';return;}
     if(state.turn!==0){el.innerHTML=`<button class="gd-btn arrange" id="gd-arrange-btn">${arrangeLabel}</button>${cancel}<button class="gd-btn" disabled>电脑思考中</button>`;$("#gd-arrange-btn").onclick=arrangeHand;if($("#gd-clear-btn"))$("#gd-clear-btn").onclick=clearSelection;return;}
     el.innerHTML=`<button class="gd-btn arrange" id="gd-arrange-btn">${arrangeLabel}</button>${cancel}<button class="gd-btn" id="gd-hint-btn">提示</button>${state.last?'<button class="gd-btn" id="gd-pass-btn">不出</button>':""}<button class="gd-btn primary" id="gd-play-btn">出牌</button>`;
     $("#gd-arrange-btn").onclick=arrangeHand;if($("#gd-clear-btn"))$("#gd-clear-btn").onclick=clearSelection;$("#gd-hint-btn").onclick=hintMove;if($("#gd-pass-btn"))$("#gd-pass-btn").onclick=()=>pass(0);$("#gd-play-btn").onclick=humanPlay;
   }
-  function renderFlushTools(){const el=$("#gd-flush-tools");if(!el)return;el.innerHTML=`<span>同花顺</span>${SUITS.map(s=>{const n=state.running?straightFlushOptions(state.hands[0],s).length:0;return `<button class="gd-flush-btn ${s==="♥"||s==="♦"?"red":""}${n?" available":""}" data-suit="${s}" ${n?"":"disabled"}>${s}${n>1?`<i>${n}</i>`:""}</button>`;}).join("")}`;$$(".gd-flush-btn.available").forEach(b=>b.onclick=()=>selectStraightFlush(b.dataset.suit));}
+  function renderFlushTools(label="同花顺"){const el=$("#gd-flush-tools");if(!el)return;el.innerHTML=`<span>${label}</span>${SUITS.map(s=>{const n=state.running?straightFlushOptions(state.hands[0],s).length:0;return `<button class="gd-flush-btn ${s==="♥"||s==="♦"?"red":""}${n?" available":""}" data-suit="${s}" ${n?"":"disabled"}>${s}${n>1?`<i>${n}</i>`:""}</button>`;}).join("")}`;$$(".gd-flush-btn.available").forEach(b=>b.onclick=()=>selectStraightFlush(b.dataset.suit));}
   function selectStraightFlush(suit){const options=straightFlushOptions(state.hands[0],suit);if(!options.length)return;const index=state.flushCycle[suit]%options.length,move=options[index];state.flushCycle[suit]=(index+1)%options.length;state.selected.clear();move.cards.forEach(c=>state.selected.add(c.id));renderHand();renderControls();$("#gd-hint").textContent=`已预选 ${suit} 同花顺 ${index+1}/${options.length}${options.length>1?"，再点切换下一组":""}`;}
   function arrangeHand(){const ids=[...state.selected];if(ids.length<2){$("#gd-hint").textContent="请先选择至少 2 张牌，再点“收为一组”";return;}state.manualGroups=state.manualGroups.map(g=>g.filter(id=>!state.selected.has(id))).filter(g=>g.length>1);state.manualGroups.push(ids);state.selected.clear();renderHand();renderControls();$("#gd-hint").textContent=`已把 ${ids.length} 张牌收为牌组 ${state.manualGroups.length}`;}
   function clearSelection(){state.selected.clear();renderHand();renderControls();$("#gd-hint").textContent="已取消预选";}
