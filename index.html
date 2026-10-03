@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#083d31" />
+  <title>欢乐斗地主</title>
+  <meta name="description" content="经典三人斗地主，与两名电脑玩家即时对战。" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23083d31'/%3E%3Cpath d='M32 8C21 20 14 25 14 37c0 8 6 13 13 10l-3 9h16l-3-9c7 3 13-2 13-10C50 25 43 20 32 8z' fill='%23f4d27a'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="./styles.css?v=13" />
+</head>
+<body>
+  <main class="game-shell" aria-label="斗地主牌桌">
+    <header class="topbar">
+      <div class="brand"><span class="brand-mark">♠</span><div><h1>欢乐斗地主</h1><p>经典三人局 · 策略人机</p></div></div>
+      <div class="score-board" aria-label="积分">
+        <span>底分 <b id="base-score">1</b></span><i></i><span>倍数 <b id="multiplier">1</b></span><i></i><button class="score-link" id="score-btn" aria-label="查看积分记录">积分 <b id="total-score">0</b></button>
+      </div>
+      <div class="top-actions"><a class="game-switch" href="./guandan.html" aria-label="切换到掼蛋">掼蛋</a><span class="ai-badge"><i></i> 智能电脑</span><button class="icon-btn landscape-btn" id="landscape-btn" aria-label="进入横屏" title="横屏">↔</button><button class="icon-btn music-btn" id="music-btn" aria-label="开启背景音乐" aria-pressed="false" title="背景音乐">♪</button><button class="icon-btn" id="rules-btn" aria-label="查看规则">?</button></div>
+    </header>
+
+    <section class="table" id="table">
+      <div class="table-glow"></div>
+      <aside class="card-counter" id="card-counter" aria-label="记牌器">
+        <div class="counter-title"><span class="counter-icon">◈</span><div><b>记牌器</b><small>对手未出</small></div></div>
+        <div class="counter-grid" id="counter-grid"></div>
+      </aside>
+      <div class="landlord-cards" id="landlord-cards" aria-label="地主牌"></div>
+
+      <article class="player opponent left" id="player-1">
+        <div class="avatar blue">阿明<span class="landlord-badge">地主</span></div>
+        <div class="player-meta"><b>阿明 <small>下家</small></b><span><em id="count-1">17</em> 张</span></div>
+        <div class="back-stack" id="backs-1"></div>
+      </article>
+
+      <article class="player opponent right" id="player-2">
+        <div class="avatar rose">小雅<span class="landlord-badge">地主</span></div>
+        <div class="player-meta"><b>小雅 <small>上家</small></b><span><em id="count-2">17</em> 张</span></div>
+        <div class="back-stack" id="backs-2"></div>
+      </article>
+
+      <div class="play-zone left-zone" id="played-1" aria-live="polite"></div>
+      <div class="play-zone right-zone" id="played-2" aria-live="polite"></div>
+      <div class="play-zone center-zone" id="played-0" aria-live="polite"></div>
+
+      <div class="table-center">
+        <div class="turn-direction" aria-label="顺时针出牌">顺时针 <span>↻</span></div>
+        <div class="round-status" id="round-status">准备发牌</div>
+        <div class="last-action" id="last-action">点击开始游戏</div>
+      </div>
+
+      <section class="you" id="player-0">
+        <div class="you-meta"><div class="avatar gold">我<span class="landlord-badge">地主</span></div><div><b>你</b><span id="role-label">农民</span></div></div>
+        <div class="hand" id="hand" aria-label="你的手牌"></div>
+      </section>
+    </section>
+
+    <footer class="control-dock">
+      <div class="hint" id="hint">准备好了吗？</div>
+      <div class="actions" id="actions">
+        <button class="btn primary" id="start-btn">开始游戏</button>
+      </div>
+    </footer>
+  </main>
+
+  <dialog id="rules-dialog">
+    <div class="dialog-head"><h2>玩法说明</h2><button class="close-btn" aria-label="关闭">×</button></div>
+    <div class="rules-copy">
+      <p>三位玩家依次叫地主，地主获得三张底牌并独自对战两名农民。最先出完手牌的一方获胜。</p>
+      <h3>支持的牌型</h3>
+      <p>单张、对子、三张、三带一、三带二、顺子、连对、飞机、四带二、炸弹和王炸。炸弹会使倍数翻倍，王炸最大。</p>
+      <h3>出牌提示</h3>
+      <p>点击手牌选择，再点击“出牌”。跟牌必须保持相同牌型且点数更大；炸弹和王炸可以压过普通牌型。</p>
+    </div>
+  </dialog>
+
+  <dialog id="result-dialog">
+    <div class="result-icon" id="result-icon">胜</div>
+    <h2 id="result-title">本局获胜</h2>
+    <p id="result-copy"></p>
+    <div class="result-score"><span>本局积分</span><b id="result-score">+2</b></div>
+    <button class="btn primary" id="again-btn">再来一局</button>
+  </dialog>
+
+  <dialog id="score-dialog">
+    <div class="dialog-head"><h2>积分记录</h2><button class="close-btn" aria-label="关闭">×</button></div>
+    <div class="score-summary">
+      <div><small>累计积分</small><b id="history-total">0</b></div>
+      <div><small>胜局</small><b id="history-wins">0</b></div>
+      <div><small>负局</small><b id="history-losses">0</b></div>
+    </div>
+    <div class="score-history" id="score-history"><p>完成一局后会显示记录</p></div>
+  </dialog>
+
+  <script src="./app.js?v=13"></script>
+</body>
+</html>
